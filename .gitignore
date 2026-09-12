@@ -1,0 +1,40 @@
+# Environment & Secrets
+.env
+.env.local
+*.env
+*.token
+session.token
+
+# Operating System Files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Python (Daemon / Backend)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Node & Frontend (GUI)
+node_modules/
+.npm/
+dist/
+dist-ssr/
+*.local
+
+# Rust & Tauri (GUI src-tauri)
+target/
+src-tauri/target/
+Cargo.lock
+
+# IDE & Editor caches
+.vscode/
+.idea/
+*.swp
+*.swo
