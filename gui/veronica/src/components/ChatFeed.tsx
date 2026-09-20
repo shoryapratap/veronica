@@ -1,6 +1,5 @@
 import React, { useEffect, useRef } from "react";
 import { ChatMessage } from "../types/protocol";
-import { Bot, User } from "lucide-react";
 
 interface Props {
   messages: ChatMessage[];
@@ -32,16 +31,10 @@ export const ChatFeed: React.FC<Props> = ({ messages }) => {
         return (
           <div
             key={msg.id}
-            className={`flex items-start gap-3 ${isBot ? "justify-start" : "justify-end"}`}
+            className={`flex ${isBot ? "justify-start" : "justify-end"}`}
           >
-            {isBot && (
-              <div className="w-7 h-7 rounded-lg bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center shrink-0 mt-0.5">
-                <Bot className="w-4 h-4 text-indigo-400" />
-              </div>
-            )}
-
             <div
-              className={`max-w-[80%] rounded-2xl px-4 py-2.5 shadow-sm leading-relaxed ${
+              className={`max-w-[85%] rounded-2xl px-4 py-2.5 shadow-sm leading-relaxed ${
                 isBot
                   ? "bg-zinc-900/90 border border-zinc-800 text-zinc-100 rounded-tl-sm"
                   : "bg-indigo-600 text-white rounded-tr-sm"
@@ -59,12 +52,6 @@ export const ChatFeed: React.FC<Props> = ({ messages }) => {
               </div>
               <p className="whitespace-pre-wrap select-text">{msg.text}</p>
             </div>
-
-            {!isBot && (
-              <div className="w-7 h-7 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0 mt-0.5">
-                <User className="w-4 h-4 text-zinc-300" />
-              </div>
-            )}
           </div>
         );
       })}

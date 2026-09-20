@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { resolvePreset, MODE_DRAWS } from "thinking-orbs";
 import { AssistantState } from "../types/protocol";
-import { Mic, Volume2, Sparkles } from "lucide-react";
 
 interface Props {
   state: AssistantState;
@@ -81,17 +80,17 @@ export const AuraOrb: React.FC<Props> = ({ state }) => {
       <div className="relative flex items-center justify-center my-2">
         <div
           className={`transition-all duration-700 ease-out ${
-            state === "IDLE" ? "scale-135 opacity-90" : "scale-150 opacity-100"
+            state === "IDLE" ? "scale-[1.48] opacity-90" : "scale-[1.65] opacity-100"
           }`}
         >
           <canvas ref={canvasRef} />
         </div>
       </div>
 
-      {/* Clean Status Badge */}
+      {/* Clean Typography Status Badge */}
       <div className="flex items-center gap-2 mt-3 text-xs font-mono">
         <div
-          className={`flex items-center gap-2 px-3.5 py-1 rounded-full border backdrop-blur-md shadow-sm transition-all duration-300 ${
+          className={`px-3.5 py-1 rounded-full border backdrop-blur-md shadow-sm transition-all duration-300 ${
             isListening
               ? "bg-zinc-900 text-cyan-300 border-cyan-800/60"
               : isSpeaking
@@ -99,13 +98,6 @@ export const AuraOrb: React.FC<Props> = ({ state }) => {
               : "bg-zinc-900 text-zinc-400 border-zinc-800/60"
           }`}
         >
-          {isListening ? (
-            <Mic className="w-3.5 h-3.5 text-cyan-300 animate-pulse" />
-          ) : isSpeaking ? (
-            <Volume2 className="w-3.5 h-3.5 text-indigo-300 animate-bounce" />
-          ) : (
-            <Sparkles className="w-3.5 h-3.5 text-zinc-500" />
-          )}
           <span>
             {isListening
               ? "Listening to you..."
