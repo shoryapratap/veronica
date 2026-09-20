@@ -33,10 +33,18 @@ async fn main() {
         }
     };
 
-    // 5. Start full-duplex Live Session
-    let session = live_client.start_duplex_session(audio_player.clone());
+    // 5. Initialize GUI Event Broadcast Channel
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel::<server::protocol::DaemonMessage>(128);
 
-    // 6. Start Continuous Microphone Streaming with Low-Latency VAD
+    // 6. Start full-duplex Live Session with GUI broadcasting
+    let session = live_client.start_duplex_session(audio_player.clone(), Some(broadcast_tx.clone()));
+
+    // 7. Start Localhost WebSocket Server for GUI (127.0.0.1:8765)
+    if let Err(e) = server::start_server(8765, session.clone(), broadcast_tx.clone()).await {
+        eprintln!("⚠️ Failed to bind GUI server on port 8765: {}", e);
+    }
+
+    // 8. Start Continuous Microphone Streaming with Low-Latency VAD
     let (mic_tx, mut mic_rx) = tokio::sync::mpsc::channel::<audio::mic::AudioStreamEvent>(128);
     let mic_streamer = audio::AudioStreamer::start(mic_tx);
     let has_mic = mic_streamer.is_ok();

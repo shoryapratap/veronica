@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "veronica",
-        "width": 800,
-        "height": 600
+        "title": "Veronica",
+        "width": 500,
+        "height": 750,
+        "minWidth": 420,
+        "minHeight": 600
       }
     ],
     "security": {

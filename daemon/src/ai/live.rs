@@ -185,6 +185,7 @@ impl GeminiLiveClient {
     pub fn start_duplex_session(
         self,
         audio_player: crate::audio::StreamingAudioPlayer,
+        event_tx: Option<tokio::sync::broadcast::Sender<crate::server::protocol::DaemonMessage>>,
     ) -> LiveSessionHandle {
         let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<Message>(64);
         let (mut ws_sink, mut ws_stream) = self.ws_stream.split();
@@ -238,6 +239,11 @@ impl GeminiLiveClient {
                             turn_has_transcript = false;
                             print!("\n⚡ [Interrupted - Listening to you]\n");
                             let _ = std::io::stdout().flush();
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(crate::server::protocol::DaemonMessage::StateChange {
+                                    state: crate::server::protocol::AssistantState::Listening,
+                                });
+                            }
                         }
 
                         // 1. User speech transcript from input_audio_transcription
@@ -248,9 +254,21 @@ impl GeminiLiveClient {
                                     if !user_speaking {
                                         print!("\rYou (Voice) > ");
                                         user_speaking = true;
+                                        if let Some(ref tx) = event_tx {
+                                            let _ = tx.send(crate::server::protocol::DaemonMessage::StateChange {
+                                                state: crate::server::protocol::AssistantState::Listening,
+                                            });
+                                        }
                                     }
                                     print!("{}", user_text);
                                     let _ = std::io::stdout().flush();
+                                    if let Some(ref tx) = event_tx {
+                                        let _ = tx.send(crate::server::protocol::DaemonMessage::Transcript {
+                                            speaker: "USER".to_string(),
+                                            text: user_text.to_string(),
+                                            is_final: false,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -266,10 +284,22 @@ impl GeminiLiveClient {
                                 if !speaking {
                                     print!("\rVeronica > ");
                                     speaking = true;
+                                    if let Some(ref tx) = event_tx {
+                                        let _ = tx.send(crate::server::protocol::DaemonMessage::StateChange {
+                                            state: crate::server::protocol::AssistantState::Speaking,
+                                        });
+                                    }
                                 }
                                 print!("{}", bot_text);
                                 let _ = std::io::stdout().flush();
                                 turn_has_transcript = true;
+                                if let Some(ref tx) = event_tx {
+                                    let _ = tx.send(crate::server::protocol::DaemonMessage::Transcript {
+                                        speaker: "VERONICA".to_string(),
+                                        text: bot_text.to_string(),
+                                        is_final: false,
+                                    });
+                                }
                             }
                         }
 
@@ -289,9 +319,21 @@ impl GeminiLiveClient {
                                             if !speaking {
                                                 print!("\rVeronica > ");
                                                 speaking = true;
+                                                if let Some(ref tx) = event_tx {
+                                                    let _ = tx.send(crate::server::protocol::DaemonMessage::StateChange {
+                                                        state: crate::server::protocol::AssistantState::Speaking,
+                                                    });
+                                                }
                                             }
                                             print!("{}", t);
                                             let _ = std::io::stdout().flush();
+                                            if let Some(ref tx) = event_tx {
+                                                let _ = tx.send(crate::server::protocol::DaemonMessage::Transcript {
+                                                    speaker: "VERONICA".to_string(),
+                                                    text: t.to_string(),
+                                                    is_final: false,
+                                                });
+                                            }
                                         }
                                     }
 
@@ -339,6 +381,11 @@ impl GeminiLiveClient {
                                 speaking = false;
                             }
                             turn_has_transcript = false;
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(crate::server::protocol::DaemonMessage::StateChange {
+                                    state: crate::server::protocol::AssistantState::Idle,
+                                });
+                            }
                         }
                     }
                 }
@@ -368,7 +415,7 @@ mod tests {
         if let Ok(key) = std::env::var("GEMINI_API_KEY") {
             let client = GeminiLiveClient::connect(&key, "gemini-2.5-flash-native-audio-latest", "Aoede").await.unwrap();
             let player = crate::audio::StreamingAudioPlayer::new().unwrap();
-            let session = client.start_duplex_session(player);
+            let session = client.start_duplex_session(player, None);
 
             // Send silent 16kHz PCM chunk
             let silent_chunk = vec![0u8; 1600];
