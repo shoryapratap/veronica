@@ -17,7 +17,7 @@ function App() {
       <StatusBar status={status} cpu={cpu} ram={ram} />
 
       {/* 2. Visual AI Presence Orb */}
-      <div className="border-b border-zinc-900/60 bg-gradient-to-b from-zinc-950 via-zinc-950/90 to-zinc-900/20 py-2">
+      <div className="border-b border-zinc-900/40 py-1">
         <AuraOrb state={assistantState} />
       </div>
 
