@@ -16,8 +16,8 @@ export const AuraOrb: React.FC<Props> = ({ state }) => {
   // Calibrated target speeds (scaled to native 2.34 engine speed):
   // - IDLE: Calm, smooth, relaxed slow drift (0.65)
   // - LISTENING / INPUT: Controlled moderate pace (1.35) - never rushes or spins too fast
-  // - SPEAKING: Full normal, lively responsive motion (2.40) while AI responds
-  const targetSpeed = isSpeaking ? 2.40 : isListening ? 1.35 : 0.65;
+  // - SPEAKING: Slightly faster active response motion (2.80) while AI responds
+  const targetSpeed = isSpeaking ? 2.80 : isListening ? 1.35 : 0.65;
 
   const targetSpeedRef = useRef(targetSpeed);
   targetSpeedRef.current = targetSpeed;
