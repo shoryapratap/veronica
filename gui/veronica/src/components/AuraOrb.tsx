@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { ThinkingOrb } from "thinking-orbs";
+import React, { useEffect, useRef } from "react";
+import { resolvePreset, MODE_DRAWS } from "thinking-orbs";
 import { AssistantState } from "../types/protocol";
 import { Mic, Volume2, Sparkles } from "lucide-react";
 
@@ -8,51 +8,83 @@ interface Props {
 }
 
 export const AuraOrb: React.FC<Props> = ({ state }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
   const isSpeaking = state === "SPEAKING";
   const isListening = state === "LISTENING";
 
-  // Target speed based on state:
-  // - IDLE: Very slow, calm, gentle drift (0.22) so it never looks dead or abruptly frozen
-  // - LISTENING: Active conversational listening speed (1.15)
-  // - SPEAKING: Energetic undulating speaking speed (1.45)
-  const targetSpeed = isSpeaking ? 1.45 : isListening ? 1.15 : 0.22;
+  // Calibrated target speeds:
+  // - IDLE: Slow, relaxed, calm rotation (0.35)
+  // - LISTENING (or text input): Gentle, controlled pace (0.65) - never rushes or spins too fast
+  // - SPEAKING: Slightly faster, rhythmic motion (0.95)
+  const targetSpeed = isSpeaking ? 0.95 : isListening ? 0.65 : 0.35;
 
-  const [currentSpeed, setCurrentSpeed] = useState(0.22);
+  const targetSpeedRef = useRef(targetSpeed);
+  targetSpeedRef.current = targetSpeed;
 
-  // Smoothly interpolate (lerp) speed to prevent any jarring start/stop jumps
+  const currentSpeedRef = useRef(0.35);
+  const phaseRef = useRef(0);
+  const lastTimeRef = useRef(0);
+
   useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const size = 64;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(size * dpr);
+    canvas.style.width = `${size}px`;
+    canvas.style.height = `${size}px`;
+
+    const preset = resolvePreset("composing", size);
+    const drawFn = MODE_DRAWS[preset.mode];
+
     let animId: number;
+    lastTimeRef.current = performance.now();
 
-    const smoothTransition = () => {
-      setCurrentSpeed((prev) => {
-        const diff = targetSpeed - prev;
-        if (Math.abs(diff) < 0.005) return targetSpeed;
-        return prev + diff * 0.08; // Smooth natural easing
-      });
+    const render = (now: number) => {
+      animId = requestAnimationFrame(render);
 
-      animId = requestAnimationFrame(smoothTransition);
+      // Delta time capped to 50ms to prevent any time-gap leaps
+      const dt = Math.min((now - lastTimeRef.current) / 1000, 0.05);
+      lastTimeRef.current = now;
+
+      // Smoothly ease current speed toward target speed
+      const diff = targetSpeedRef.current - currentSpeedRef.current;
+      currentSpeedRef.current += diff * 0.06;
+
+      // CONTINUOUS PHASE ACCUMULATION:
+      // Prevents the library's bug where multiplying absolute timestamp
+      // by a changing speed causes wild, supersonic phase jumps.
+      phaseRef.current += dt * currentSpeedRef.current;
+
+      // Clear & Draw
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, size, size);
+      drawFn(ctx, size, phaseRef.current, true, preset.opts);
     };
 
-    animId = requestAnimationFrame(smoothTransition);
-    return () => cancelAnimationFrame(animId);
-  }, [targetSpeed]);
+    animId = requestAnimationFrame(render);
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, []);
 
   return (
     <div className="flex flex-col items-center justify-center select-none py-4 w-full">
-      {/* Free-Floating Orb with Smooth Scale & Momentum */}
+      {/* Free-Floating Composing Ribbon with Continuous Phase Easing */}
       <div className="relative flex items-center justify-center my-2">
         <div
           className={`transition-all duration-700 ease-out ${
-            state === "IDLE" ? "scale-135 opacity-85" : "scale-155 opacity-100"
+            state === "IDLE" ? "scale-135 opacity-90" : "scale-150 opacity-100"
           }`}
         >
-          <ThinkingOrb
-            state="composing"
-            size={64}
-            theme="dark"
-            speed={currentSpeed}
-            paused={false}
-          />
+          <canvas ref={canvasRef} />
         </div>
       </div>
 
