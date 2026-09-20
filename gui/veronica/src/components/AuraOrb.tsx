@@ -13,16 +13,16 @@ export const AuraOrb: React.FC<Props> = ({ state }) => {
   const isSpeaking = state === "SPEAKING";
   const isListening = state === "LISTENING";
 
-  // Calibrated target speeds:
-  // - IDLE: Slow, relaxed, calm rotation (0.35)
-  // - LISTENING (or text input): Gentle, controlled pace (0.65) - never rushes or spins too fast
-  // - SPEAKING: Slightly faster, rhythmic motion (0.95)
-  const targetSpeed = isSpeaking ? 0.95 : isListening ? 0.65 : 0.35;
+  // Calibrated target speeds (scaled to native 2.34 engine speed):
+  // - IDLE: Calm, smooth, relaxed slow drift (0.65)
+  // - LISTENING / INPUT: Controlled moderate pace (1.35) - never rushes or spins too fast
+  // - SPEAKING: Full normal, lively responsive motion (2.40) while AI responds
+  const targetSpeed = isSpeaking ? 2.40 : isListening ? 1.35 : 0.65;
 
   const targetSpeedRef = useRef(targetSpeed);
   targetSpeedRef.current = targetSpeed;
 
-  const currentSpeedRef = useRef(0.35);
+  const currentSpeedRef = useRef(0.65);
   const phaseRef = useRef(0);
   const lastTimeRef = useRef(0);
 
@@ -55,7 +55,7 @@ export const AuraOrb: React.FC<Props> = ({ state }) => {
 
       // Smoothly ease current speed toward target speed
       const diff = targetSpeedRef.current - currentSpeedRef.current;
-      currentSpeedRef.current += diff * 0.06;
+      currentSpeedRef.current += diff * 0.08;
 
       // CONTINUOUS PHASE ACCUMULATION:
       // Prevents the library's bug where multiplying absolute timestamp
