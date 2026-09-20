@@ -7,8 +7,8 @@ edition = "2021"
 # Async Runtime (Multi-threaded event loop)
 tokio = { version = "1.43", features = ["full"] }
 
-# Localhost WebSocket Server (for GUI connection)
-tokio-tungstenite = "0.26"
+# Localhost WebSocket Server & Client (with TLS for Gemini Live WebSocket)
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = "0.3"
 
 # JSON Serialization (Compile-time, zero-copy)
@@ -17,3 +17,16 @@ serde_json = "1.0"
 
 # Hardware Monitoring (CPU, RAM, Battery telemetry)
 sysinfo = "0.33"
+
+# HTTP Client for Google Gemini API
+reqwest = { version = "0.12", features = ["json"] }
+
+# Environment variables loader (.env support)
+dotenvy = "0.15"
+
+# Base64 decoding for Gemini native audio bytes
+base64 = "0.22"
+
+# Cross-platform Microphone Audio Capture & Low-latency Audio Playback
+cpal = "0.15"
+rodio = "0.19"
