@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import { AssistantState } from "../types/protocol";
 import { Mic, Volume2, Sparkles } from "lucide-react";
@@ -11,21 +11,47 @@ export const AuraOrb: React.FC<Props> = ({ state }) => {
   const isSpeaking = state === "SPEAKING";
   const isListening = state === "LISTENING";
 
-  // Orb only moves when either the user or the AI is talking
-  const isMoving = isSpeaking || isListening;
-  const speed = isSpeaking ? 1.4 : 1.1;
+  // Target speed based on state:
+  // - IDLE: Very slow, calm, gentle drift (0.22) so it never looks dead or abruptly frozen
+  // - LISTENING: Active conversational listening speed (1.15)
+  // - SPEAKING: Energetic undulating speaking speed (1.45)
+  const targetSpeed = isSpeaking ? 1.45 : isListening ? 1.15 : 0.22;
+
+  const [currentSpeed, setCurrentSpeed] = useState(0.22);
+
+  // Smoothly interpolate (lerp) speed to prevent any jarring start/stop jumps
+  useEffect(() => {
+    let animId: number;
+
+    const smoothTransition = () => {
+      setCurrentSpeed((prev) => {
+        const diff = targetSpeed - prev;
+        if (Math.abs(diff) < 0.005) return targetSpeed;
+        return prev + diff * 0.08; // Smooth natural easing
+      });
+
+      animId = requestAnimationFrame(smoothTransition);
+    };
+
+    animId = requestAnimationFrame(smoothTransition);
+    return () => cancelAnimationFrame(animId);
+  }, [targetSpeed]);
 
   return (
     <div className="flex flex-col items-center justify-center select-none py-4 w-full">
-      {/* Independent Free-Floating Orb (No background box, No background glow) */}
+      {/* Free-Floating Orb with Smooth Scale & Momentum */}
       <div className="relative flex items-center justify-center my-2">
-        <div className="transform scale-150 transition-transform duration-300">
+        <div
+          className={`transition-all duration-700 ease-out ${
+            state === "IDLE" ? "scale-135 opacity-85" : "scale-155 opacity-100"
+          }`}
+        >
           <ThinkingOrb
             state="composing"
             size={64}
             theme="dark"
-            speed={speed}
-            paused={!isMoving}
+            speed={currentSpeed}
+            paused={false}
           />
         </div>
       </div>
