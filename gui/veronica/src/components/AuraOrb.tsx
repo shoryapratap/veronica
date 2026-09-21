@@ -86,27 +86,6 @@ export const AuraOrb: React.FC<Props> = ({ state }) => {
           <canvas ref={canvasRef} />
         </div>
       </div>
-
-      {/* Clean Typography Status Badge */}
-      <div className="flex items-center gap-2 mt-3 text-xs font-mono">
-        <div
-          className={`px-3.5 py-1 rounded-full border backdrop-blur-md shadow-sm transition-all duration-300 ${
-            isListening
-              ? "bg-zinc-900 text-cyan-300 border-cyan-800/60"
-              : isSpeaking
-              ? "bg-zinc-900 text-indigo-300 border-indigo-800/60"
-              : "bg-zinc-900 text-zinc-400 border-zinc-800/60"
-          }`}
-        >
-          <span>
-            {isListening
-              ? "Listening to you..."
-              : isSpeaking
-              ? "Veronica speaking..."
-              : "Veronica is ready"}
-          </span>
-        </div>
-      </div>
     </div>
   );
 };
