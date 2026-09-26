@@ -529,6 +529,128 @@ impl GeminiLiveClient {
                             }
                         }
                     }
+
+                    // 4. Top-level toolCall / tool_call from Gemini Live
+                    let tool_call = v.get("tool_call").or_else(|| v.get("toolCall"));
+                    if let Some(tc) = tool_call {
+                        let function_calls = tc.get("function_calls").or_else(|| tc.get("functionCalls"))
+                            .and_then(|f| f.as_array());
+                        if let Some(calls) = function_calls {
+                            for fc in calls {
+                                let name = fc.get("name").and_then(|n| n.as_str());
+                                let call_id = fc.get("id").or_else(|| fc.get("call_id")).and_then(|i| i.as_str()).map(|s| s.to_string());
+                                let args = fc.get("args").cloned().unwrap_or(Value::Null);
+
+                                if let Some(name) = name {
+                                    if name == "capture_screen" {
+                                        println!("\n   📸 [Veronica Vision]: Gemini requested screen capture...");
+                                        match crate::vision::capture_primary_screen() {
+                                            Ok(jpeg_bytes) => {
+                                                println!("   ✅ [Veronica Vision]: Captured desktop screen ({} KB). Sending to Gemini...", jpeg_bytes.len() / 1024);
+
+                                                // 1. Send the image frame via realtime_input media_chunks
+                                                let img_msg = json!({
+                                                    "realtime_input": {
+                                                        "media_chunks": [
+                                                            {
+                                                                "mime_type": "image/jpeg",
+                                                                "data": BASE64.encode(&jpeg_bytes)
+                                                            }
+                                                        ]
+                                                    }
+                                                });
+                                                let _ = outbound_tx_inbound.send(Message::Text(img_msg.to_string().into())).await;
+
+                                                // 2. Return tool_response confirming frame attachment
+                                                if let Some(cid) = call_id {
+                                                    let tool_resp = json!({
+                                                        "tool_response": {
+                                                            "function_responses": [
+                                                                {
+                                                                    "response": {
+                                                                        "output": {
+                                                                            "status": "Screen captured successfully. Visual frame attached to live vision context. Now explain what is visible on the user's screen."
+                                                                        }
+                                                                    },
+                                                                    "id": cid
+                                                                }
+                                                            ]
+                                                        }
+                                                    });
+                                                    let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
+                                                }
+                                            }
+                                            Err(err) => {
+                                                eprintln!("   ❌ [Veronica Vision]: Capture error: {}", err);
+                                                if let Some(cid) = call_id {
+                                                    let tool_resp = json!({
+                                                        "tool_response": {
+                                                            "function_responses": [
+                                                                {
+                                                                    "response": {
+                                                                        "output": { "error": err }
+                                                                    },
+                                                                    "id": cid
+                                                                }
+                                                            ]
+                                                        }
+                                                    });
+                                                    let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
+                                                }
+                                            }
+                                        }
+                                    } else if name == "launch_app" {
+                                        if let Some(target) = args.get("target").and_then(|t| t.as_str()) {
+                                            println!("\n   🚀 [Action]: Launching '{}'...", target);
+                                            match crate::system::command::launch_app(target).await {
+                                                Ok(msg) => {
+                                                    println!("   ✅ [Success]: {}", msg);
+                                                    if let Some(cid) = call_id {
+                                                        let tool_resp = json!({
+                                                            "tool_response": {
+                                                                "function_responses": [
+                                                                    {
+                                                                        "response": {
+                                                                            "output": { "result": msg }
+                                                                        },
+                                                                        "id": cid
+                                                                    }
+                                                                ]
+                                                            }
+                                                        });
+                                                        let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    eprintln!("   ❌ [Failed]: {}", err);
+                                                    if let Some(cid) = call_id {
+                                                        let tool_resp = json!({
+                                                            "tool_response": {
+                                                                "function_responses": [
+                                                                    {
+                                                                        "response": {
+                                                                            "output": { "error": err }
+                                                                        },
+                                                                        "id": cid
+                                                                    }
+                                                                ]
+                                                            }
+                                                        });
+                                                        let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 5. Tool Call Cancellation
+                    if v.get("tool_call_cancellation").or_else(|| v.get("toolCallCancellation")).is_some() {
+                        println!("ℹ️ [Gemini Live]: Tool call was cancelled by server");
+                    }
                 }
             }
         });

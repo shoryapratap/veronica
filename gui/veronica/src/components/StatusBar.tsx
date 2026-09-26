@@ -14,6 +14,15 @@ export const StatusBar: React.FC<Props> = ({ status, cpu = 0, ram = "0/0 MB" }) 
   return (
     <header className="flex items-center justify-between px-6 py-3 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800/60 text-xs font-mono text-zinc-400">
       <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <img
+            src="/veronica_logo.jpg"
+            alt="Veronica Logo"
+            className="w-5 h-5 rounded-md object-cover border border-zinc-700/60 shadow-sm"
+          />
+          <span className="font-semibold tracking-wider text-zinc-200">VERONICA</span>
+        </div>
+        <span className="text-zinc-700">|</span>
         <span
           className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${
             isOnline
