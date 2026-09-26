@@ -18,7 +18,7 @@ export const StatusBar: React.FC<Props> = ({ status, cpu = 0, ram = "0/0 MB" }) 
           <img
             src="/veronica_logo.png"
             alt="Veronica Logo"
-            className="h-5 w-auto object-contain drop-shadow"
+            className="w-7 h-7 rounded-lg object-contain shadow-sm"
           />
           <span className="font-semibold tracking-wider text-zinc-200">VERONICA</span>
         </div>
