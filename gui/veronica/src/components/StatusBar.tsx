@@ -16,7 +16,7 @@ export const StatusBar: React.FC<Props> = ({ status, cpu = 0, ram = "0/0 MB" }) 
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2">
           <img
-            src="/veronica_logo.jpg"
+            src="/veronica_logo.png"
             alt="Veronica Logo"
             className="w-5 h-5 rounded-md object-cover border border-zinc-700/60 shadow-sm"
           />
