@@ -30,3 +30,9 @@ base64 = "0.22"
 # Cross-platform Microphone Audio Capture & Low-latency Audio Playback
 cpal = "0.15"
 rodio = "0.19"
+
+# Screen Capture & Fast JPEG Image Encoding for Gemini Vision
+xcap = "0.9.8"
+win-screenshot = "4.0.14"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+

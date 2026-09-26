@@ -3,6 +3,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 pub mod ai;
 pub mod audio;
 pub mod system;
+pub mod vision;
 mod server;
 
 #[tokio::main]
@@ -97,6 +98,18 @@ async fn main() {
         if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
             println!("Veronica > Goodbye! Shutting down.");
             break;
+        }
+
+        if trimmed.eq_ignore_ascii_case("/screen") || trimmed.eq_ignore_ascii_case("/look") {
+            println!("📸 [Terminal Vision]: Capturing screen and sending to Veronica...");
+            match session.capture_and_send_screen().await {
+                Ok(_) => {
+                    println!("✅ Screen attached! Asking Veronica to inspect...");
+                    let _ = session.send_text("I have shared my screen with you. Please describe what is visible on my screen.").await;
+                }
+                Err(e) => eprintln!("❌ Screen capture error: {}", e),
+            }
+            continue;
         }
 
         // Send user typed text concurrently to the live session

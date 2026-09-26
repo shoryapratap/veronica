@@ -118,12 +118,27 @@ async fn handle_connection(
                         ClientMessage::TextMessage { text } => {
                             let trimmed = text.trim();
                             if !trimmed.is_empty() {
-                                println!("\rYou (GUI) > {}", trimmed);
-                                let _ = session.send_text(trimmed).await;
+                                if trimmed.eq_ignore_ascii_case("/screen") || trimmed.eq_ignore_ascii_case("/look") {
+                                    println!("   📸 [GUI Vision]: Manual screen capture triggered by user");
+                                    if let Err(e) = session.capture_and_send_screen().await {
+                                        eprintln!("   ❌ Failed to send screen: {}", e);
+                                    } else {
+                                        let _ = session.send_text("I have shared my screen with you. Please describe what is visible on my screen.").await;
+                                    }
+                                } else {
+                                    println!("\rYou (GUI) > {}", trimmed);
+                                    let _ = session.send_text(trimmed).await;
+                                }
                             }
                         }
                         ClientMessage::Command { action } => {
                             println!("   ⚡ [GUI Command]: {}", action);
+                            if action == "capture_screen" || action == "vision" {
+                                println!("   📸 [GUI Vision]: Screen snapshot triggered");
+                                if let Err(e) = session.capture_and_send_screen().await {
+                                    eprintln!("   ❌ Failed to send screen: {}", e);
+                                }
+                            }
                         }
                     }
                 }
