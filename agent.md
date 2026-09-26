@@ -31,3 +31,12 @@
   - Upon initial boot or deployment, the engine analyzes the host environment (detecting kernel, window manager, display server, package manager, and whether ROS / Android environment is present).
   - The daemon binds or loads the corresponding OS Platform Adapter module dynamically (or compiles the matching platform driver) to control application launching, input simulation, and process management.
 - Any OS-specific execution (process launching, file systems, audio capture, notifications, input events) must strictly reside within modular platform adapters (`system/platform/`) behind a unified, universal public interface. No OS-specific code is allowed in the core server, bridge, or audio services.
+
+## Visual Aesthetics & Design Language (GUI Tier)
+- **Core Theme**: High-end futuristic luxury — Black, White, Silver Metallic, and Frosted Glass UI.
+- **Palette**:
+  - **Obsidian / Pure Dark**: Deep blacks (`#000000`, `#09090b`, `#121217`) for infinite depth and contrast.
+  - **Silver & Chrome**: Metallic gradients, brushed steel highlights, and silver/zinc typography (`#FFFFFF`, `#E4E4E7`, `#A1A1AA`).
+  - **Frosted Glassmorphism**: Translucent panels (`backdrop-blur-xl`, `bg-zinc-950/70`, delicate `border-white/10` or `border-zinc-800/60`, specular edge highlights).
+- **Constraint**: Strictly avoid toy-like, saturated rainbow colors (bright reds, neon greens, blues, yellows). All badges, status pills, orbs, and controls must strictly adhere to monochrome, silver metallic, and glass aesthetic.
+
