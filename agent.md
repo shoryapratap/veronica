@@ -40,3 +40,14 @@
   - **Frosted Glassmorphism**: Translucent panels (`backdrop-blur-xl`, `bg-zinc-950/70`, delicate `border-white/10` or `border-zinc-800/60`, specular edge highlights).
 - **Constraint**: Strictly avoid toy-like, saturated rainbow colors (bright reds, neon greens, blues, yellows). All badges, status pills, orbs, and controls must strictly adhere to monochrome, silver metallic, and glass aesthetic.
 
+
+## Tool & Feature Architecture (2-Step JIT Master Function Pattern)
+- **Token Efficiency & Anti-Bloat Rule**: Never dump 50+ tool schemas into Gemini Live setup.
+- **2-Step Flow**:
+  1. AI receives plain-text capabilities list from daemon/src/ai/catalog.rs.
+  2. Step 1 (select_feature_function): AI selects feature & function. The feature's dedicated **Master Function** returns the exact JSON schema on demand.
+  3. Step 2 (execute_feature_function): AI returns filled parameters. The feature's dedicated **Master Function** receives the data and executes the local implementation.
+- **PostgreSQL Database Storage**:
+  - All reminders/schedules are persisted in PostgreSQL (eronica_db).
+  - Must always capture the full contextual user reason in the description column.
+  - Delivered reminders must be auto-purged from PostgreSQL upon notification to keep storage lean.
