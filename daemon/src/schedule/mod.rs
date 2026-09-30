@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use chrono::{Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio_postgres::{Client, NoTls};
 
 /// Schedule item representation stored in PostgreSQL
@@ -49,6 +50,119 @@ impl ScheduleEngine {
         }
 
         engine
+    }
+
+    // ==========================================
+    // 👑 MASTER FUNCTION: SCHEDULE FEATURE
+    // ==========================================
+
+    /// Schedule Feature Master Function (Schema Provider):
+    /// Returns the exact JSON structure for any requested function in this feature.
+    pub fn master_schema(function_name: &str) -> serde_json::Value {
+        match function_name {
+            "create" => json!({
+                "type": "OBJECT",
+                "properties": {
+                    "title": { "type": "STRING", "description": "Short title of the task" },
+                    "description": { "type": "STRING", "description": "Detailed context: what the user specifically asked for and why" },
+                    "time_expression": { "type": "STRING", "description": "When to alert (e.g. 'in 2 minutes', 'tomorrow at 3 PM')" },
+                    "duration_minutes": { "type": "INTEGER", "description": "Duration in minutes (optional)" },
+                    "recurrence": { "type": "STRING", "enum": ["none", "daily", "weekly"] },
+                    "schedule_type": { "type": "STRING", "enum": ["reminder", "meeting", "habit", "timer"] }
+                },
+                "required": ["title", "description", "time_expression"]
+            }),
+            "list" => json!({
+                "type": "OBJECT",
+                "properties": {
+                    "limit": { "type": "INTEGER", "description": "Max upcoming items to retrieve (default 10)" }
+                }
+            }),
+            "cancel" => json!({
+                "type": "OBJECT",
+                "properties": {
+                    "identifier": { "type": "STRING", "description": "Title or ID of the schedule to cancel" }
+                },
+                "required": ["identifier"]
+            }),
+            other => json!({
+                "error": format!("Unknown function '{}' in schedule feature", other)
+            })
+        }
+    }
+
+    /// Schedule Feature Master Function (Execution Dispatcher):
+    /// Receives filled JSON values from manager, calls exact local function, and executes.
+    pub async fn master_execute(&self, function_name: &str, data: &serde_json::Value) -> serde_json::Value {
+        match function_name {
+            "create" => {
+                let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("Reminder");
+                let description = data.get("description").and_then(|v| v.as_str())
+                    .unwrap_or("User requested task reminder");
+                let time_expr = data.get("time_expression").and_then(|v| v.as_str())
+                    .unwrap_or("in 5 minutes");
+                let duration = data.get("duration_minutes").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                let recurrence = data.get("recurrence").and_then(|v| v.as_str()).unwrap_or("none");
+                let sched_type = data.get("schedule_type").and_then(|v| v.as_str()).unwrap_or("reminder");
+
+                match self.create_schedule(
+                    title,
+                    description,
+                    time_expr,
+                    duration,
+                    Some(recurrence),
+                    Some(sched_type),
+                ).await {
+                    Ok(item) => json!({
+                        "status": "success",
+                        "message": format!("Successfully scheduled '{}' for {} with context saved.", item.title, item.target_time),
+                        "item": item
+                    }),
+                    Err(e) => json!({
+                        "status": "error",
+                        "message": format!("Failed to create schedule: {}", e)
+                    })
+                }
+            }
+
+            "list" => {
+                let limit = data.get("limit").and_then(|v| v.as_i64()).unwrap_or(10);
+                match self.list_upcoming(limit).await {
+                    Ok(items) => json!({
+                        "status": "success",
+                        "count": items.len(),
+                        "schedules": items
+                    }),
+                    Err(e) => json!({
+                        "status": "error",
+                        "message": format!("Failed to retrieve schedules: {}", e)
+                    })
+                }
+            }
+
+            "cancel" => {
+                let identifier = data.get("identifier").and_then(|v| v.as_str()).unwrap_or("");
+                match self.cancel_schedule(identifier).await {
+                    Ok(true) => json!({
+                        "status": "success",
+                        "message": format!("Successfully cancelled schedule matching '{}'", identifier)
+                    }),
+                    Ok(false) => json!({
+                        "status": "not_found",
+                        "message": format!("No pending schedule found matching '{}'", identifier)
+                    }),
+                    Err(e) => json!({
+                        "status": "error",
+                        "message": format!("Error cancelling schedule: {}", e)
+                    })
+                }
+            }
+
+            other => json!({
+                "status": "error",
+                "message": format!("Unknown schedule function: '{}'", other)
+            })
+        }
     }
 
     /// Ensure active connection to PostgreSQL
@@ -203,7 +317,6 @@ impl ScheduleEngine {
         let guard = self.client.lock().await;
         let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
 
-        // Cancel and delete immediately so cancelled items do not linger
         let sql = r#"
             DELETE FROM schedules
             WHERE (id =  OR LOWER(title) LIKE LOWER()) AND status = 'pending'
@@ -214,47 +327,6 @@ impl ScheduleEngine {
             .map_err(|e| format!("Failed to delete schedule in PostgreSQL: {}", e))?;
 
         Ok(rows_affected > 0)
-    }
-
-    /// Explicitly remove a schedule from the database once fulfilled
-    pub async fn delete_schedule(&self, id: &str) -> Result<bool, String> {
-        self.ensure_connected().await?;
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
-
-        let rows = client.execute("DELETE FROM schedules WHERE id = ", &[&id]).await
-            .map_err(|e| format!("Failed to delete schedule: {}", e))?;
-
-        Ok(rows > 0)
-    }
-
-    /// Check for conflicting meetings in the given time frame
-    pub async fn check_conflicts(&self, start_ts: i64, duration_mins: i32) -> Result<Option<String>, String> {
-        self.ensure_connected().await?;
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
-
-        let end_ts = start_ts + (duration_mins as i64 * 60);
-
-        let sql = r#"
-            SELECT title, target_time
-            FROM schedules
-            WHERE status = 'pending'
-              AND target_timestamp < 
-              AND (target_timestamp + (duration_minutes * 60)) > 
-            LIMIT 1
-        "#;
-
-        let rows = client.query(sql, &[&end_ts, &start_ts]).await
-            .map_err(|e| format!("Failed to check conflicts: {}", e))?;
-
-        if let Some(row) = rows.first() {
-            let conflict_title: String = row.get(0);
-            let conflict_time: String = row.get(1);
-            Ok(Some(format!("'{}' at {}", conflict_title, conflict_time)))
-        } else {
-            Ok(None)
-        }
     }
 
     /// Auto-check worker loop with alert queue and immediate database purge
@@ -305,20 +377,17 @@ impl ScheduleEngine {
 
             // 2. Process each due reminder: notify AI queue, popup toast, and clear from PostgreSQL
             for item in due_items {
-                // A) Notify AI voice session via queue so Veronica speaks to the user
                 if let Some(ref queue_tx) = alert_queue_tx {
                     let _ = queue_tx.send(item.clone()).await;
                 }
 
-                // B) Trigger native Windows Notification Popup
                 self.trigger_alert(&item).await;
 
-                // C) Auto-clear from database to keep PostgreSQL clean
+                // Auto-clear from database to keep PostgreSQL clean
                 if self.ensure_connected().await.is_ok() {
                     let guard = self.client.lock().await;
                     if let Some(client) = guard.as_ref() {
                         if item.recurrence == "daily" {
-                            // Advance to tomorrow
                             let next_ts = item.target_timestamp + 86400;
                             let next_time_str = Local::now().checked_add_signed(Duration::days(1))
                                 .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
@@ -327,9 +396,7 @@ impl ScheduleEngine {
                                 "UPDATE schedules SET target_timestamp = , target_time =  WHERE id = ",
                                 &[&next_ts, &next_time_str, &item.id],
                             ).await;
-                            println!("   🔁 [PostgreSQL Auto-Queue] Advanced recurring task '{}' to {}", item.title, next_time_str);
                         } else if item.recurrence == "weekly" {
-                            // Advance to next week
                             let next_ts = item.target_timestamp + (86400 * 7);
                             let next_time_str = Local::now().checked_add_signed(Duration::days(7))
                                 .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
@@ -338,9 +405,7 @@ impl ScheduleEngine {
                                 "UPDATE schedules SET target_timestamp = , target_time =  WHERE id = ",
                                 &[&next_ts, &next_time_str, &item.id],
                             ).await;
-                            println!("   🔁 [PostgreSQL Auto-Queue] Advanced weekly task '{}' to {}", item.title, next_time_str);
                         } else {
-                            // Non-recurring: PURGE IMMEDIATELY from database
                             let _ = client.execute("DELETE FROM schedules WHERE id = ", &[&item.id]).await;
                             println!("   🧹 [PostgreSQL Auto-Clear] Delivered & removed reminder '{}' from database.", item.title);
                         }
@@ -382,7 +447,6 @@ fn parse_time_expression(expr: &str) -> Result<(i64, String), String> {
     let lower = expr.to_lowercase().trim().to_string();
     let now = Local::now();
 
-    // Check relative minute offset: "in X min" / "in X minutes"
     if lower.starts_with("in ") {
         let rest = lower.trim_start_matches("in ").trim();
         let parts: Vec<&str> = rest.split_whitespace().collect();
@@ -407,7 +471,6 @@ fn parse_time_expression(expr: &str) -> Result<(i64, String), String> {
         }
     }
 
-    // Default: in 10 minutes if parsing is ambiguous
     let target = now + Duration::minutes(10);
     Ok((target.timestamp(), target.format("%Y-%m-%d %I:%M %p").to_string()))
 }

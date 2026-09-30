@@ -3,8 +3,8 @@ use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
 use crate::schedule::ScheduleEngine;
 
-/// ToolManager coordinates tool definitions and execution cleanly
-/// so the AI can use all system and scheduling tools effectively.
+/// ToolManager coordinates the 2-step tool discovery & execution flow
+/// by delegating schema resolution and execution to each feature's Master Function.
 #[derive(Clone)]
 pub struct ToolManager {
     schedule: Arc<ScheduleEngine>,
@@ -16,97 +16,51 @@ impl ToolManager {
         Self { schedule }
     }
 
-    /// Complete function declarations exposed to Google Gemini Live
+    /// Exposes the 2-step tools to Google Gemini Live:
+    /// 1. select_feature_function: Ask the feature's Master Function for its exact JSON schema
+    /// 2. execute_feature_function: Submit filled JSON parameters to the feature's Master Function
     pub fn get_declarations() -> serde_json::Value {
         json!([
             {
-                "name": "create_schedule",
-                "description": "Create a new calendar meeting, reminder, timer, or habit in PostgreSQL. Store detailed description of user context.",
+                "name": "select_feature_function",
+                "description": "Step 1: Select a feature and function to retrieve its exact JSON structure from its Master Function.",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
-                        "title": {
+                        "feature": {
                             "type": "STRING",
-                            "description": "Short, clear title for the event or reminder"
+                            "description": "Target feature domain",
+                            "enum": ["schedule", "system"]
                         },
-                        "description": {
+                        "function": {
                             "type": "STRING",
-                            "description": "Detailed context: what the user specifically asked for, why, and any extra notes so Veronica knows exactly what she's reminding about"
-                        },
-                        "time_expression": {
-                            "type": "STRING",
-                            "description": "Natural time expression when to trigger (e.g. 'in 2 minutes', 'tomorrow at 3 PM', 'in 1 hour')"
-                        },
-                        "duration_minutes": {
-                            "type": "INTEGER",
-                            "description": "Duration in minutes (e.g. 30, 45, 60 for meetings, 0 for instant reminders)"
-                        },
-                        "recurrence": {
-                            "type": "STRING",
-                            "description": "Recurrence pattern: 'none', 'daily', or 'weekly'",
-                            "enum": ["none", "daily", "weekly"]
-                        },
-                        "schedule_type": {
-                            "type": "STRING",
-                            "description": "Type of event: 'reminder', 'meeting', 'habit', or 'timer'",
-                            "enum": ["reminder", "meeting", "habit", "timer"]
+                            "description": "Specific function to inspect (e.g. 'create', 'list', 'cancel', 'capture_screen', 'launch_app')"
                         }
                     },
-                    "required": ["title", "description", "time_expression"]
+                    "required": ["feature", "function"]
                 }
             },
             {
-                "name": "get_schedule",
-                "description": "Retrieve upcoming scheduled tasks, meetings, and reminders from PostgreSQL including their full context descriptions.",
+                "name": "execute_feature_function",
+                "description": "Step 2: Submit filled parameter values to the feature's Master Function for execution.",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
-                        "limit": {
-                            "type": "INTEGER",
-                            "description": "Maximum number of upcoming items to return (default 10)"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "cancel_schedule",
-                "description": "Cancel an existing scheduled event or reminder by its title or ID.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "identifier": {
+                        "feature": {
                             "type": "STRING",
-                            "description": "The title or ID of the schedule to cancel"
+                            "description": "Target feature domain",
+                            "enum": ["schedule", "system"]
+                        },
+                        "function": {
+                            "type": "STRING",
+                            "description": "Function name to execute"
+                        },
+                        "data": {
+                            "type": "OBJECT",
+                            "description": "Filled JSON arguments matching the function schema"
                         }
                     },
-                    "required": ["identifier"]
-                }
-            },
-            {
-                "name": "capture_screen",
-                "description": "Inspect the user's primary monitor to view and analyze whatever is currently on screen.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "reason": {
-                            "type": "STRING",
-                            "description": "Reason for capturing the screen"
-                        }
-                    }
-                }
-            },
-            {
-                "name": "launch_app",
-                "description": "Launch a desktop application or URL on the local operating system.",
-                "parameters": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "app_name": {
-                            "type": "STRING",
-                            "description": "Name or executable of the application (e.g., 'notepad', 'chrome', 'calc', 'code')"
-                        }
-                    },
-                    "required": ["app_name"]
+                    "required": ["feature", "function", "data"]
                 }
             }
         ])
@@ -119,132 +73,55 @@ impl ToolManager {
         args: &serde_json::Value,
         call_id: Option<&str>,
     ) -> Message {
-        println!("🛠️  [Tool Manager] AI executing tool: '{}'", name);
+        println!("🛠️  [Tool Manager] AI invoked: '{}'", name);
         println!("   📦 Arguments: {}", args);
 
         let output_value = match name {
-            "create_schedule" => {
-                let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("Reminder");
-                let description = args.get("description").and_then(|v| v.as_str())
-                    .unwrap_or("User requested task reminder");
-                let time_expr = args.get("time_expression").and_then(|v| v.as_str())
-                    .unwrap_or("in 5 minutes");
-                let duration = args.get("duration_minutes").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                let recurrence = args.get("recurrence").and_then(|v| v.as_str()).unwrap_or("none");
-                let sched_type = args.get("schedule_type").and_then(|v| v.as_str()).unwrap_or("reminder");
+            // STEP 1: AI selects a feature & function -> Manager queries the feature's Master Function for Schema
+            "select_feature_function" => {
+                let feature = args.get("feature").and_then(|v| v.as_str()).unwrap_or("");
+                let function = args.get("function").and_then(|v| v.as_str()).unwrap_or("");
 
-                match self.schedule.create_schedule(
-                    title,
-                    description,
-                    time_expr,
-                    duration,
-                    Some(recurrence),
-                    Some(sched_type),
-                ).await {
-                    Ok(item) => {
-                        println!("   ✅ [Tool Manager] Schedule saved to PostgreSQL: '{}' at {}", item.title, item.target_time);
-                        json!({
-                            "status": "success",
-                            "message": format!("Successfully scheduled '{}' for {} with context saved.", item.title, item.target_time),
-                            "item": item
-                        })
-                    }
-                    Err(e) => {
-                        eprintln!("   ❌ [Tool Manager] Schedule error: {}", e);
-                        json!({
-                            "status": "error",
-                            "message": format!("Failed to create schedule: {}", e)
-                        })
-                    }
-                }
-            }
-
-            "get_schedule" => {
-                let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10);
-                match self.schedule.list_upcoming(limit).await {
-                    Ok(items) => {
-                        println!("   📅 [Tool Manager] Retrieved {} upcoming schedules from PostgreSQL", items.len());
-                        json!({
-                            "status": "success",
-                            "count": items.len(),
-                            "schedules": items
-                        })
-                    }
-                    Err(e) => {
-                        eprintln!("   ❌ [Tool Manager] Get schedule error: {}", e);
-                        json!({
-                            "status": "error",
-                            "message": format!("Failed to retrieve schedules: {}", e)
-                        })
-                    }
-                }
-            }
-
-            "cancel_schedule" => {
-                let identifier = args.get("identifier").and_then(|v| v.as_str()).unwrap_or("");
-                match self.schedule.cancel_schedule(identifier).await {
-                    Ok(true) => {
-                        println!("   🗑️ [Tool Manager] Cancelled schedule matching '{}'", identifier);
-                        json!({
-                            "status": "success",
-                            "message": format!("Successfully cancelled schedule matching '{}'", identifier)
-                        })
-                    }
-                    Ok(false) => {
-                        json!({
-                            "status": "not_found",
-                            "message": format!("No pending schedule found matching '{}'", identifier)
-                        })
-                    }
-                    Err(e) => {
-                        json!({
-                            "status": "error",
-                            "message": format!("Error cancelling schedule: {}", e)
-                        })
-                    }
-                }
-            }
-
-            "capture_screen" => {
-                println!("   📸 [Tool Manager] Screen capture requested by AI");
-                match crate::vision::capture_primary_screen() {
-                    Ok(jpeg_bytes) => {
-                        json!({
-                            "status": "success",
-                            "message": "Screen snapshot captured successfully",
-                            "bytes_len": jpeg_bytes.len()
-                        })
-                    }
-                    Err(e) => {
-                        json!({
-                            "status": "error",
-                            "message": format!("Failed to capture screen: {}", e)
-                        })
-                    }
-                }
-            }
-
-            "launch_app" => {
-                let app = args.get("app_name").and_then(|v| v.as_str()).unwrap_or("");
-                println!("   🚀 [Tool Manager] Launching application: {}", app);
-                let res = tokio::process::Command::new("powershell")
-                    .args(["-NoProfile", "-Command", &format!("Start-Process '{}'", app)])
-                    .spawn();
-
-                match res {
-                    Ok(_) => json!({
-                        "status": "success",
-                        "message": format!("Launched application '{}'", app)
+                let schema = match feature {
+                    "schedule" => ScheduleEngine::master_schema(function),
+                    "system" => crate::system::master_schema(function),
+                    other => json!({
+                        "error": format!("Feature '{}' not found in system", other)
                     }),
-                    Err(e) => json!({
+                };
+
+                println!("   📋 [Master Function Schema]: Provided exact schema for {}.{}", feature, function);
+                json!({
+                    "status": "schema_ready",
+                    "feature": feature,
+                    "function": function,
+                    "expected_schema": schema,
+                    "instruction": "Now call 'execute_feature_function' with 'data' filled according to this exact schema."
+                })
+            }
+
+            // STEP 2: AI provides filled JSON -> Manager sends to the feature's Master Function for Execution
+            "execute_feature_function" => {
+                let feature = args.get("feature").and_then(|v| v.as_str()).unwrap_or("");
+                let function = args.get("function").and_then(|v| v.as_str()).unwrap_or("");
+                let empty_obj = json!({});
+                let data = args.get("data").unwrap_or(&empty_obj);
+
+                let result = match feature {
+                    "schedule" => self.schedule.master_execute(function, data).await,
+                    "system" => crate::system::master_execute(function, data).await,
+                    other => json!({
                         "status": "error",
-                        "message": format!("Failed to launch '{}': {}", app, e)
-                    })
-                }
+                        "message": format!("Feature '{}' not recognized", other)
+                    }),
+                };
+
+                println!("   ✅ [Master Function Executed]: Result for {}.{}", feature, function);
+                result
             }
 
             other => {
-                eprintln!("   ⚠️ [Tool Manager] Unknown tool: '{}'", other);
+                eprintln!("   ⚠️ [Tool Manager] Unknown meta-tool: '{}'", other);
                 json!({
                     "status": "unknown_tool",
                     "message": format!("Tool '{}' is not recognized", other)
