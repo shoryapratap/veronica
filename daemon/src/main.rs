@@ -1,26 +1,29 @@
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub mod ai;
 pub mod audio;
-pub mod system;
-pub mod vision;
 pub mod schedule;
 mod server;
+pub mod system;
+pub mod vision;
 
 #[tokio::main]
 async fn main() {
     // 1. Load environment variables from .env
-        dotenvy::dotenv().ok();
+    dotenvy::dotenv().ok();
 
-    // 1.1 Initialize Local SQLite Database for persistent schedules, reminders & context
-    let schedule_db = schedule::ScheduleDb::new("data/veronica.db")
-        .expect("❌ Failed to initialize schedules database");
+    // 2. Initialize PostgreSQL Schedule Engine (with description context)
+    let schedule_engine = Arc::new(schedule::ScheduleEngine::new(None).await);
 
-    // Spawn background scheduler worker (0% CPU, checks every 3s)
-    let worker_db = schedule_db.clone();
+    // Spawn 24/7 background scheduler alert worker
+    let worker_engine = Arc::clone(&schedule_engine);
     tokio::spawn(async move {
-        schedule::start_schedule_worker(worker_db).await;
+        worker_engine.start_background_worker().await;
     });
+
+    // 3. Initialize AI Tool Manager (handles all tool declarations and routing)
+    let tool_manager = ai::ToolManager::new(Arc::clone(&schedule_engine));
 
     let api_key = std::env::var("GEMINI_API_KEY")
         .expect("❌ Error: GEMINI_API_KEY not found in daemon/.env file!");
@@ -29,14 +32,14 @@ async fn main() {
     let voice_name = std::env::var("GEMINI_VOICE")
         .unwrap_or_else(|_| "Aoede".to_string());
 
-    // 2. Initialize Streaming Audio Player (Low-latency in-memory playback)
+    // 4. Initialize Streaming Audio Player (Low-latency in-memory playback)
     let audio_player = audio::StreamingAudioPlayer::new()
         .expect("❌ Failed to initialize streaming audio player");
 
-    // 3. Detect system environment
+    // 5. Detect system environment
     let env_info = system::detector::detect_environment();
 
-    // 4. Connect to Gemini Live WebSocket
+    // 6. Connect to Gemini Live WebSocket
     let live_client = match ai::GeminiLiveClient::connect(&api_key, &live_model, &voice_name).await {
         Ok(client) => client,
         Err(err) => {
@@ -45,18 +48,22 @@ async fn main() {
         }
     };
 
-    // 5. Initialize GUI Event Broadcast Channel
+    // 7. Initialize GUI Event Broadcast Channel
     let (broadcast_tx, _) = tokio::sync::broadcast::channel::<server::protocol::DaemonMessage>(128);
 
-    // 6. Start full-duplex Live Session with GUI broadcasting
-    let session = live_client.start_duplex_session(audio_player.clone(), Some(broadcast_tx.clone()), Some(schedule_db.clone()));
+    // 8. Start full-duplex Live Session with GUI broadcasting & Tool Manager
+    let session = live_client.start_duplex_session(
+        audio_player.clone(),
+        Some(broadcast_tx.clone()),
+        tool_manager,
+    );
 
-    // 7. Start Localhost WebSocket Server for GUI (127.0.0.1:8765)
+    // 9. Start Localhost WebSocket Server for GUI (127.0.0.1:8765)
     if let Err(e) = server::start_server(8765, session.clone(), broadcast_tx.clone()).await {
         eprintln!("⚠️ Failed to bind GUI server on port 8765: {}", e);
     }
 
-    // 8. Start Continuous Microphone Streaming with Low-Latency VAD
+    // 10. Start Continuous Microphone Streaming with Low-Latency VAD
     let (mic_tx, mut mic_rx) = tokio::sync::mpsc::channel::<audio::mic::AudioStreamEvent>(128);
     let mic_streamer = audio::AudioStreamer::start(mic_tx);
     let has_mic = mic_streamer.is_ok();
@@ -82,21 +89,24 @@ async fn main() {
     }
 
     println!("==================================================");
-    println!("  🤖 Project Veronica: Autonomous AI Assistant");
+    println!("  ✨ Project Veronica: Autonomous AI Assistant");
     println!("  🖥️  Environment: {}", env_info);
     println!("  ⚡ Mode: Continuous Voice + Concurrent Text Input");
+    println!("  🐘 Database: PostgreSQL (Schedules & Context)");
     if has_mic {
         println!("  🎙️  Microphone: Always Listening (Speak naturally)");
     } else {
         println!("  ⚠️  Microphone: Unavailable (Text Only Mode)");
     }
-    println!("  💬 Text Input: Active (Type anytime & press Enter)");
-    println!("  🔒 Voice: {} (Google Neural Audio)", voice_name);
+    println!("  ⌨️  Text Input: Active (Type anytime & press Enter)");
+    println!("  🗣️  Voice: {} (Google Neural Audio)", voice_name);
     println!("==================================================");
-    println!("\nVeronica is listening! Speak naturally, or type your message below.");
-    println!("(Type 'exit' to quit)\n");
+    println!("
+Veronica is listening! Speak naturally, or type your message below.");
+    println!("(Type 'exit' to quit)
+");
 
-    // 7. Concurrent Terminal Text Input
+    // 11. Concurrent Terminal Text Input
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
 
@@ -112,8 +122,9 @@ async fn main() {
         }
 
         if trimmed.eq_ignore_ascii_case("/schedule") || trimmed.eq_ignore_ascii_case("/agenda") {
-            println!("\n📋 [Veronica Agenda - Upcoming Schedules]:");
-            match schedule_db.list_upcoming(10) {
+            println!("
+📅 [Veronica Agenda - Upcoming Schedules (PostgreSQL)]:");
+            match schedule_engine.list_upcoming(10).await {
                 Ok(items) if items.is_empty() => println!("   ✨ No upcoming reminders or meetings. Schedule is clear!"),
                 Ok(items) => {
                     for (i, item) in items.iter().enumerate() {
@@ -121,7 +132,7 @@ async fn main() {
                         println!("      📝 Context: {}", item.description);
                     }
                 }
-                Err(e) => eprintln!("   ❌ Error reading database: {}", e),
+                Err(e) => eprintln!("   ❌ Error reading PostgreSQL: {}", e),
             }
             println!();
             continue;
