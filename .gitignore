@@ -38,3 +38,8 @@ Cargo.lock
 .idea/
 *.swp
 *.swo
+
+# Local Databases
+*.db
+*.sqlite
+data/

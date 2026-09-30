@@ -4,12 +4,23 @@ pub mod ai;
 pub mod audio;
 pub mod system;
 pub mod vision;
+pub mod schedule;
 mod server;
 
 #[tokio::main]
 async fn main() {
     // 1. Load environment variables from .env
-    dotenvy::dotenv().ok();
+        dotenvy::dotenv().ok();
+
+    // 1.1 Initialize Local SQLite Database for persistent schedules, reminders & context
+    let schedule_db = schedule::ScheduleDb::new("data/veronica.db")
+        .expect("❌ Failed to initialize schedules database");
+
+    // Spawn background scheduler worker (0% CPU, checks every 3s)
+    let worker_db = schedule_db.clone();
+    tokio::spawn(async move {
+        schedule::start_schedule_worker(worker_db).await;
+    });
 
     let api_key = std::env::var("GEMINI_API_KEY")
         .expect("❌ Error: GEMINI_API_KEY not found in daemon/.env file!");
@@ -38,7 +49,7 @@ async fn main() {
     let (broadcast_tx, _) = tokio::sync::broadcast::channel::<server::protocol::DaemonMessage>(128);
 
     // 6. Start full-duplex Live Session with GUI broadcasting
-    let session = live_client.start_duplex_session(audio_player.clone(), Some(broadcast_tx.clone()));
+    let session = live_client.start_duplex_session(audio_player.clone(), Some(broadcast_tx.clone()), Some(schedule_db.clone()));
 
     // 7. Start Localhost WebSocket Server for GUI (127.0.0.1:8765)
     if let Err(e) = server::start_server(8765, session.clone(), broadcast_tx.clone()).await {
@@ -98,6 +109,22 @@ async fn main() {
         if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
             println!("Veronica > Goodbye! Shutting down.");
             break;
+        }
+
+        if trimmed.eq_ignore_ascii_case("/schedule") || trimmed.eq_ignore_ascii_case("/agenda") {
+            println!("\n📋 [Veronica Agenda - Upcoming Schedules]:");
+            match schedule_db.list_upcoming(10) {
+                Ok(items) if items.is_empty() => println!("   ✨ No upcoming reminders or meetings. Schedule is clear!"),
+                Ok(items) => {
+                    for (i, item) in items.iter().enumerate() {
+                        println!("   {}. [{}] {} @ {}", i + 1, item.schedule_type.to_uppercase(), item.title, item.target_time);
+                        println!("      📝 Context: {}", item.description);
+                    }
+                }
+                Err(e) => eprintln!("   ❌ Error reading database: {}", e),
+            }
+            println!();
+            continue;
         }
 
         if trimmed.eq_ignore_ascii_case("/screen") || trimmed.eq_ignore_ascii_case("/look") {

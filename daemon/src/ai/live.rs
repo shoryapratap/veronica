@@ -146,7 +146,12 @@ impl GeminiLiveClient {
                 "system_instruction": {
                     "parts": [
                         {
-                            "text": "You are Veronica, an autonomous personal AI assistant running directly inside the user's operating system. You have eyes and ears: you can listen, speak, and see the user's computer screen using the 'capture_screen' tool whenever asked. Speak naturally, concisely, and warmly. Answer directly and immediately in 1 to 2 sentences. Never output meta-thoughts or internal commentary."
+                            "text": "You are Veronica, an autonomous personal AI assistant running directly inside the user's operating system. You have eyes, ears, and smart scheduling intelligence:
+1. You can see the user's screen using 'capture_screen'.
+2. You can launch applications using 'launch_app'.
+3. You can smartly schedule reminders, meetings, alarms, and routines using 'create_schedule', 'get_schedule', and 'cancel_schedule'.
+Whenever scheduling, always record both the title and a rich, detailed 'description' capturing the exact context of what the user asked and why.
+Speak naturally, concisely, and warmly. Answer directly and immediately in 1 to 2 sentences. Never output meta-thoughts or internal commentary."
                         }
                     ]
                 },
@@ -234,6 +239,7 @@ impl GeminiLiveClient {
         self,
         audio_player: crate::audio::StreamingAudioPlayer,
         event_tx: Option<tokio::sync::broadcast::Sender<crate::server::protocol::DaemonMessage>>,
+        schedule_db: Option<crate::schedule::ScheduleDb>,
     ) -> LiveSessionHandle {
         let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<Message>(64);
         let outbound_tx_inbound = outbound_tx.clone();
@@ -396,117 +402,18 @@ impl GeminiLiveClient {
                                         }
                                     }
 
-                                    // Tool calls (e.g. capture_screen, launch_app)
+                                    // Tool calls (e.g. capture_screen, launch_app, schedule)
                                     let func_call = part.get("function_call").or_else(|| part.get("functionCall"));
                                     if let Some(fc) = func_call {
                                         if let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
                                             let args = fc.get("args").cloned().unwrap_or(Value::Null);
                                             let call_id = fc.get("id").or_else(|| fc.get("call_id")).and_then(|i| i.as_str()).map(|s| s.to_string());
-
-                                            if name == "capture_screen" {
-                                                println!("\n   📸 [Veronica Vision]: Capturing primary screen for Gemini Live...");
-                                                match crate::vision::capture_primary_screen() {
-                                                    Ok(jpeg_bytes) => {
-                                                        println!("   ✅ [Veronica Vision]: Screen captured ({} KB). Sending to Gemini...", jpeg_bytes.len() / 1024);
-                                                        // 1. Send the image frame
-                                                        let img_msg = json!({
-                                                            "realtime_input": {
-                                                                "media_chunks": [
-                                                                    {
-                                                                        "mime_type": "image/jpeg",
-                                                                        "data": BASE64.encode(&jpeg_bytes)
-                                                                    }
-                                                                ]
-                                                            }
-                                                        });
-                                                        let _ = outbound_tx_inbound.send(Message::Text(img_msg.to_string().into())).await;
-
-                                                        // 2. Return tool response confirming frame attachment
-                                                        if let Some(cid) = call_id {
-                                                            let tool_resp = json!({
-                                                                "tool_response": {
-                                                                    "function_responses": [
-                                                                        {
-                                                                            "response": {
-                                                                                "output": {
-                                                                                    "status": "Screen captured successfully. High-resolution visual frame attached to live vision context. Now describe and explain what you see on the user's screen."
-                                                                                }
-                                                                            },
-                                                                            "id": cid
-                                                                        }
-                                                                    ]
-                                                                }
-                                                            });
-                                                            let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                        }
-                                                    }
-                                                    Err(err) => {
-                                                        eprintln!("   ❌ [Veronica Vision]: Screen capture failed: {}", err);
-                                                        if let Some(cid) = call_id {
-                                                            let tool_resp = json!({
-                                                                "tool_response": {
-                                                                    "function_responses": [
-                                                                        {
-                                                                            "response": {
-                                                                                "output": { "error": err }
-                                                                            },
-                                                                            "id": cid
-                                                                        }
-                                                                    ]
-                                                                }
-                                                            });
-                                                            let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                        }
-                                                    }
-                                                }
-                                            } else if name == "launch_app" {
-                                                if let Some(target) = args.get("target").and_then(|t| t.as_str()) {
-                                                    println!("\n   🚀 [Action]: Launching '{}'...", target);
-                                                    match crate::system::command::launch_app(target).await {
-                                                        Ok(msg) => {
-                                                            println!("   ✅ [Success]: {}", msg);
-                                                            if let Some(cid) = call_id {
-                                                                let tool_resp = json!({
-                                                                    "tool_response": {
-                                                                        "function_responses": [
-                                                                            {
-                                                                                "response": {
-                                                                                    "output": { "result": msg }
-                                                                                },
-                                                                                "id": cid
-                                                                            }
-                                                                        ]
-                                                                    }
-                                                                });
-                                                                let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                            }
-                                                        }
-                                                        Err(err) => {
-                                                            eprintln!("   ❌ [Failed]: {}", err);
-                                                            if let Some(cid) = call_id {
-                                                                let tool_resp = json!({
-                                                                    "tool_response": {
-                                                                        "function_responses": [
-                                                                            {
-                                                                                "response": {
-                                                                                    "output": { "error": err }
-                                                                                },
-                                                                                "id": cid
-                                                                            }
-                                                                        ]
-                                                                    }
-                                                                });
-                                                                let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            execute_tool(name, &args, call_id.as_deref(), &outbound_tx_inbound, schedule_db.as_ref()).await;
+                                        }
+                                    }
                                         }
                                     }
                                 }
-                            }
-                        }
 
                         let is_turn_complete = sc.get("turn_complete").or_else(|| sc.get("turnComplete"))
                             .and_then(|tc| tc.as_bool())
@@ -542,106 +449,7 @@ impl GeminiLiveClient {
                                 let args = fc.get("args").cloned().unwrap_or(Value::Null);
 
                                 if let Some(name) = name {
-                                    if name == "capture_screen" {
-                                        println!("\n   📸 [Veronica Vision]: Gemini requested screen capture...");
-                                        match crate::vision::capture_primary_screen() {
-                                            Ok(jpeg_bytes) => {
-                                                println!("   ✅ [Veronica Vision]: Captured desktop screen ({} KB). Sending to Gemini...", jpeg_bytes.len() / 1024);
-
-                                                // 1. Send the image frame via realtime_input media_chunks
-                                                let img_msg = json!({
-                                                    "realtime_input": {
-                                                        "media_chunks": [
-                                                            {
-                                                                "mime_type": "image/jpeg",
-                                                                "data": BASE64.encode(&jpeg_bytes)
-                                                            }
-                                                        ]
-                                                    }
-                                                });
-                                                let _ = outbound_tx_inbound.send(Message::Text(img_msg.to_string().into())).await;
-
-                                                // 2. Return tool_response confirming frame attachment
-                                                if let Some(cid) = call_id {
-                                                    let tool_resp = json!({
-                                                        "tool_response": {
-                                                            "function_responses": [
-                                                                {
-                                                                    "response": {
-                                                                        "output": {
-                                                                            "status": "Screen captured successfully. Visual frame attached to live vision context. Now explain what is visible on the user's screen."
-                                                                        }
-                                                                    },
-                                                                    "id": cid
-                                                                }
-                                                            ]
-                                                        }
-                                                    });
-                                                    let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                }
-                                            }
-                                            Err(err) => {
-                                                eprintln!("   ❌ [Veronica Vision]: Capture error: {}", err);
-                                                if let Some(cid) = call_id {
-                                                    let tool_resp = json!({
-                                                        "tool_response": {
-                                                            "function_responses": [
-                                                                {
-                                                                    "response": {
-                                                                        "output": { "error": err }
-                                                                    },
-                                                                    "id": cid
-                                                                }
-                                                            ]
-                                                        }
-                                                    });
-                                                    let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                }
-                                            }
-                                        }
-                                    } else if name == "launch_app" {
-                                        if let Some(target) = args.get("target").and_then(|t| t.as_str()) {
-                                            println!("\n   🚀 [Action]: Launching '{}'...", target);
-                                            match crate::system::command::launch_app(target).await {
-                                                Ok(msg) => {
-                                                    println!("   ✅ [Success]: {}", msg);
-                                                    if let Some(cid) = call_id {
-                                                        let tool_resp = json!({
-                                                            "tool_response": {
-                                                                "function_responses": [
-                                                                    {
-                                                                        "response": {
-                                                                            "output": { "result": msg }
-                                                                        },
-                                                                        "id": cid
-                                                                    }
-                                                                ]
-                                                            }
-                                                        });
-                                                        let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                    }
-                                                }
-                                                Err(err) => {
-                                                    eprintln!("   ❌ [Failed]: {}", err);
-                                                    if let Some(cid) = call_id {
-                                                        let tool_resp = json!({
-                                                            "tool_response": {
-                                                                "function_responses": [
-                                                                    {
-                                                                        "response": {
-                                                                            "output": { "error": err }
-                                                                        },
-                                                                        "id": cid
-                                                                    }
-                                                                ]
-                                                            }
-                                                        });
-                                                        let _ = outbound_tx_inbound.send(Message::Text(tool_resp.to_string().into())).await;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                    execute_tool(name, &args, call_id.as_deref(), &outbound_tx_inbound, schedule_db.as_ref()).await;
                                 }
                             }
                         }
@@ -656,6 +464,283 @@ impl GeminiLiveClient {
         });
 
         LiveSessionHandle { outbound_tx }
+    }
+}
+
+
+async fn execute_tool(
+    name: &str,
+    args: &Value,
+    call_id: Option<&str>,
+    outbound_tx: &tokio::sync::mpsc::Sender<Message>,
+    schedule_db: Option<&crate::schedule::ScheduleDb>,
+) {
+    if name == "capture_screen" {
+        println!("
+   📸 [Veronica Vision]: Capturing primary screen for Gemini Live...");
+        match crate::vision::capture_primary_screen() {
+            Ok(jpeg_bytes) => {
+                println!("   ✨ [Veronica Vision]: Screen captured ({} KB). Sending to Gemini...", jpeg_bytes.len() / 1024);
+                let img_msg = json!({
+                    "realtime_input": {
+                        "media_chunks": [{
+                            "mime_type": "image/jpeg",
+                            "data": BASE64.encode(&jpeg_bytes)
+                        }]
+                    }
+                });
+                let _ = outbound_tx.send(Message::Text(img_msg.to_string().into())).await;
+
+                if let Some(cid) = call_id {
+                    let tool_resp = json!({
+                        "tool_response": {
+                            "function_responses": [{
+                                "response": {
+                                    "output": {
+                                        "status": "Screen captured successfully. High-resolution visual frame attached to live vision context. Now describe and explain what you see on the user's screen."
+                                    }
+                                },
+                                "id": cid
+                            }]
+                        }
+                    });
+                    let _ = outbound_tx.send(Message::Text(tool_resp.to_string().into())).await;
+                }
+            }
+            Err(err) => {
+                eprintln!("   ⚠️ [Veronica Vision]: Screen capture failed: {}", err);
+                if let Some(cid) = call_id {
+                    let tool_resp = json!({
+                        "tool_response": {
+                            "function_responses": [{
+                                "response": { "output": { "error": err } },
+                                "id": cid
+                            }]
+                        }
+                    });
+                    let _ = outbound_tx.send(Message::Text(tool_resp.to_string().into())).await;
+                }
+            }
+        }
+    } else if name == "launch_app" {
+        if let Some(target) = args.get("target").and_then(|t| t.as_str()) {
+            println!("
+   🚀 [Action]: Launching '{}'...", target);
+            match crate::system::command::launch_app(target).await {
+                Ok(msg) => {
+                    println!("   ✨ [Success]: {}", msg);
+                    if let Some(cid) = call_id {
+                        let tool_resp = json!({
+                            "tool_response": {
+                                "function_responses": [{
+                                    "response": { "output": { "result": msg } },
+                                    "id": cid
+                                }]
+                            }
+                        });
+                        let _ = outbound_tx.send(Message::Text(tool_resp.to_string().into())).await;
+                    }
+                }
+                Err(err) => {
+                    eprintln!("   ⚠️ [Failed]: {}", err);
+                    if let Some(cid) = call_id {
+                        let tool_resp = json!({
+                            "tool_response": {
+                                "function_responses": [{
+                                    "response": { "output": { "error": err } },
+                                    "id": cid
+                                }]
+                            }
+                        });
+                        let _ = outbound_tx.send(Message::Text(tool_resp.to_string().into())).await;
+                    }
+                }
+            }
+        }
+    } else if name == "create_schedule" {
+        let title = args.get("title").and_then(|t| t.as_str()).unwrap_or("Reminder").to_string();
+        let description = args.get("description").and_then(|d| d.as_str()).unwrap_or("No context").to_string();
+        let time_offset = args.get("time_offset_seconds").and_then(|t| t.as_i64()).unwrap_or(0);
+        let specific_datetime = args.get("specific_datetime").and_then(|s| s.as_str());
+        let duration = args.get("duration_minutes").and_then(|d| d.as_i64()).unwrap_or(15);
+        let schedule_type = args.get("schedule_type").and_then(|st| st.as_str()).unwrap_or("reminder").to_string();
+        let recurrence = args.get("recurrence").and_then(|r| r.as_str()).map(|s| s.to_string());
+
+        let now_ts = chrono::Utc::now().timestamp();
+        let target_ts = if time_offset > 0 {
+            now_ts + time_offset
+        } else if let Some(dt_str) = specific_datetime {
+            chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc().timestamp())
+                .unwrap_or(now_ts + 600)
+        } else {
+            now_ts + 600
+        };
+
+        let target_dt = chrono::DateTime::from_timestamp(target_ts, 0)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %I:%M %p").to_string())
+            .unwrap_or_else(|| "Soon".to_string());
+
+        let mut output_payload = json!({});
+
+        if let Some(db) = schedule_db {
+            if schedule_type == "meeting" {
+                if let Ok(conflicts) = db.check_conflicts(target_ts, duration) {
+                    if !conflicts.is_empty() {
+                        let titles: Vec<String> = conflicts.iter().map(|c| format!("'{}' at {}", c.title, c.target_time)).collect();
+                        output_payload = json!({
+                            "status": "conflict_detected",
+                            "conflicts": titles,
+                            "message": format!("Conflict warning: Existing meeting(s) at that time: {}. Inform the user and suggest an alternative time slot.", titles.join(", "))
+                        });
+                    }
+                }
+            }
+
+            if output_payload.get("status").is_none() {
+                let id = format!("sch_{}", now_ts % 1000000);
+                let item = crate::schedule::ScheduleItem {
+                    id: id.clone(),
+                    title: title.clone(),
+                    description: description.clone(),
+                    schedule_type: schedule_type.clone(),
+                    target_time: target_dt.clone(),
+                    target_timestamp: target_ts,
+                    duration_minutes: duration,
+                    recurrence,
+                    status: "pending".to_string(),
+                    created_at: chrono::Local::now().to_rfc3339(),
+                };
+
+                match db.add(&item) {
+                    Ok(_) => {
+                        println!("
+   📅 [Veronica Schedule]: Created {} '{}' for {}", schedule_type, title, target_dt);
+                        println!("      📝 Context / Description: {}", description);
+                        output_payload = json!({
+                            "status": "success",
+                            "id": id,
+                            "title": title,
+                            "type": schedule_type,
+                            "target_time": target_dt,
+                            "description": description,
+                            "message": format!("Successfully saved {} '{}' for {}. You have noted the detailed description: '{}'. Confirm to the user warmly.", schedule_type, title, target_dt, description)
+                        });
+                    }
+                    Err(e) => {
+                        output_payload = json!({
+                            "status": "error",
+                            "message": format!("Database write error: {}", e)
+                        });
+                    }
+                }
+            }
+        } else {
+            output_payload = json!({
+                "status": "error",
+                "message": "Schedule database connection not available"
+            });
+        }
+
+        if let Some(cid) = call_id {
+            let tool_resp = json!({
+                "tool_response": {
+                    "function_responses": [{
+                        "response": { "output": output_payload },
+                        "id": cid
+                    }]
+                }
+            });
+            let _ = outbound_tx.send(Message::Text(tool_resp.to_string().into())).await;
+        }
+    } else if name == "get_schedule" {
+        let limit = args.get("limit").and_then(|l| l.as_u64()).unwrap_or(5) as usize;
+        let mut output_payload = json!({});
+
+        if let Some(db) = schedule_db {
+            match db.list_upcoming(limit) {
+                Ok(items) => {
+                    if items.is_empty() {
+                        output_payload = json!({
+                            "status": "success",
+                            "count": 0,
+                            "message": "The user currently has no pending reminders or scheduled meetings. Their schedule is completely clear."
+                        });
+                    } else {
+                        let list: Vec<Value> = items.iter().map(|item| json!({
+                            "id": item.id,
+                            "title": item.title,
+                            "description": item.description,
+                            "type": item.schedule_type,
+                            "target_time": item.target_time
+                        })).collect();
+                        output_payload = json!({
+                            "status": "success",
+                            "count": list.len(),
+                            "items": list,
+                            "message": "Here are the upcoming scheduled items with their descriptions. Summarize them warmly and clearly for the user."
+                        });
+                    }
+                }
+                Err(e) => {
+                    output_payload = json!({
+                        "status": "error",
+                        "message": format!("Database read error: {}", e)
+                    });
+                }
+            }
+        }
+
+        if let Some(cid) = call_id {
+            let tool_resp = json!({
+                "tool_response": {
+                    "function_responses": [{
+                        "response": { "output": output_payload },
+                        "id": cid
+                    }]
+                }
+            });
+            let _ = outbound_tx.send(Message::Text(tool_resp.to_string().into())).await;
+        }
+    } else if name == "cancel_schedule" {
+        let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
+        let mut output_payload = json!({});
+
+        if let Some(db) = schedule_db {
+            match db.cancel(query) {
+                Ok(count) if count > 0 => {
+                    output_payload = json!({
+                        "status": "success",
+                        "cancelled_count": count,
+                        "message": format!("Successfully cancelled the schedule matching '{}'.", query)
+                    });
+                }
+                Ok(_) => {
+                    output_payload = json!({
+                        "status": "not_found",
+                        "message": format!("No active schedule matching '{}' was found.", query)
+                    });
+                }
+                Err(e) => {
+                    output_payload = json!({
+                        "status": "error",
+                        "message": format!("Error cancelling schedule: {}", e)
+                    });
+                }
+            }
+        }
+
+        if let Some(cid) = call_id {
+            let tool_resp = json!({
+                "tool_response": {
+                    "function_responses": [{
+                        "response": { "output": output_payload },
+                        "id": cid
+                    }]
+                }
+            });
+            let _ = outbound_tx.send(Message::Text(tool_resp.to_string().into())).await;
+        }
     }
 }
 
@@ -678,7 +763,7 @@ mod tests {
         if let Ok(key) = std::env::var("GEMINI_API_KEY") {
             let client = GeminiLiveClient::connect(&key, "gemini-2.5-flash-native-audio-latest", "Aoede").await.unwrap();
             let player = crate::audio::StreamingAudioPlayer::new().unwrap();
-            let session = client.start_duplex_session(player, None);
+            let session = client.start_duplex_session(player, None, None);
 
             // Send silent 16kHz PCM chunk
             let silent_chunk = vec![0u8; 1600];
