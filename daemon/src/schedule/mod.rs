@@ -18,7 +18,7 @@ pub struct ScheduleItem {
     pub created_at: String,
 }
 
-/// PostgreSQL-backed schedule and calendar engine
+/// PostgreSQL-backed schedule and calendar engine with auto-cleanup queue
 #[derive(Clone)]
 pub struct ScheduleEngine {
     client: Arc<tokio::sync::Mutex<Option<Client>>>,
@@ -38,7 +38,6 @@ impl ScheduleEngine {
             db_url: url,
         };
 
-        // Attempt initial connection
         if let Err(e) = engine.ensure_connected().await {
             eprintln!("⚠️ [PostgreSQL Engine] Notice: Could not connect to PostgreSQL immediately: {}", e);
             eprintln!("💡 Veronica will retry automatically when scheduling tasks.");
@@ -204,17 +203,29 @@ impl ScheduleEngine {
         let guard = self.client.lock().await;
         let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
 
+        // Cancel and delete immediately so cancelled items do not linger
         let sql = r#"
-            UPDATE schedules
-            SET status = 'cancelled'
+            DELETE FROM schedules
             WHERE (id =  OR LOWER(title) LIKE LOWER()) AND status = 'pending'
         "#;
 
         let search_pattern = format!("%{}%", identifier);
         let rows_affected = client.execute(sql, &[&identifier, &search_pattern]).await
-            .map_err(|e| format!("Failed to update schedule in PostgreSQL: {}", e))?;
+            .map_err(|e| format!("Failed to delete schedule in PostgreSQL: {}", e))?;
 
         Ok(rows_affected > 0)
+    }
+
+    /// Explicitly remove a schedule from the database once fulfilled
+    pub async fn delete_schedule(&self, id: &str) -> Result<bool, String> {
+        self.ensure_connected().await?;
+        let guard = self.client.lock().await;
+        let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
+
+        let rows = client.execute("DELETE FROM schedules WHERE id = ", &[&id]).await
+            .map_err(|e| format!("Failed to delete schedule: {}", e))?;
+
+        Ok(rows > 0)
     }
 
     /// Check for conflicting meetings in the given time frame
@@ -246,9 +257,12 @@ impl ScheduleEngine {
         }
     }
 
-    /// Run 24/7 background scheduler worker to alert user on due tasks
-    pub async fn start_background_worker(self: Arc<Self>) {
-        println!("🕒 [Scheduler Worker] Started 24/7 background alert loop for PostgreSQL");
+    /// Auto-check worker loop with alert queue and immediate database purge
+    pub async fn start_background_worker(
+        self: Arc<Self>,
+        alert_queue_tx: Option<tokio::sync::mpsc::Sender<ScheduleItem>>,
+    ) {
+        println!("🕒 [Scheduler Worker] Started auto-check queue and cleanup loop (PostgreSQL)");
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -256,7 +270,7 @@ impl ScheduleEngine {
             let now = Utc::now().timestamp();
             let mut due_items = Vec::new();
 
-            // Fetch due items
+            // 1. Fetch due items from PostgreSQL
             if self.ensure_connected().await.is_ok() {
                 let guard = self.client.lock().await;
                 if let Some(client) = guard.as_ref() {
@@ -266,6 +280,7 @@ impl ScheduleEngine {
                                recurrence, status, created_at
                         FROM schedules
                         WHERE status = 'pending' AND target_timestamp <= 
+                        ORDER BY target_timestamp ASC
                         LIMIT 10
                     "#;
 
@@ -288,18 +303,47 @@ impl ScheduleEngine {
                 }
             }
 
-            // Trigger alerts for each due task
+            // 2. Process each due reminder: notify AI queue, popup toast, and clear from PostgreSQL
             for item in due_items {
+                // A) Notify AI voice session via queue so Veronica speaks to the user
+                if let Some(ref queue_tx) = alert_queue_tx {
+                    let _ = queue_tx.send(item.clone()).await;
+                }
+
+                // B) Trigger native Windows Notification Popup
                 self.trigger_alert(&item).await;
 
-                // Mark as triggered in PostgreSQL
-                if let Ok(_) = self.ensure_connected().await {
+                // C) Auto-clear from database to keep PostgreSQL clean
+                if self.ensure_connected().await.is_ok() {
                     let guard = self.client.lock().await;
                     if let Some(client) = guard.as_ref() {
-                        let _ = client.execute(
-                            "UPDATE schedules SET status = 'triggered' WHERE id = ",
-                            &[&item.id],
-                        ).await;
+                        if item.recurrence == "daily" {
+                            // Advance to tomorrow
+                            let next_ts = item.target_timestamp + 86400;
+                            let next_time_str = Local::now().checked_add_signed(Duration::days(1))
+                                .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
+                                .unwrap_or_else(|| item.target_time.clone());
+                            let _ = client.execute(
+                                "UPDATE schedules SET target_timestamp = , target_time =  WHERE id = ",
+                                &[&next_ts, &next_time_str, &item.id],
+                            ).await;
+                            println!("   🔁 [PostgreSQL Auto-Queue] Advanced recurring task '{}' to {}", item.title, next_time_str);
+                        } else if item.recurrence == "weekly" {
+                            // Advance to next week
+                            let next_ts = item.target_timestamp + (86400 * 7);
+                            let next_time_str = Local::now().checked_add_signed(Duration::days(7))
+                                .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
+                                .unwrap_or_else(|| item.target_time.clone());
+                            let _ = client.execute(
+                                "UPDATE schedules SET target_timestamp = , target_time =  WHERE id = ",
+                                &[&next_ts, &next_time_str, &item.id],
+                            ).await;
+                            println!("   🔁 [PostgreSQL Auto-Queue] Advanced weekly task '{}' to {}", item.title, next_time_str);
+                        } else {
+                            // Non-recurring: PURGE IMMEDIATELY from database
+                            let _ = client.execute("DELETE FROM schedules WHERE id = ", &[&item.id]).await;
+                            println!("   🧹 [PostgreSQL Auto-Clear] Delivered & removed reminder '{}' from database.", item.title);
+                        }
                     }
                 }
             }
@@ -318,7 +362,6 @@ impl ScheduleEngine {
         println!("╚══════════════════════════════════════════════════════════════════╝
 ");
 
-        // Native Windows PowerShell Toast Notification
         let title_clean = item.title.replace('"', "'");
         let desc_clean = item.description.replace('"', "'");
 

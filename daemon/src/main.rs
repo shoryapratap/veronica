@@ -16,10 +16,13 @@ async fn main() {
     // 2. Initialize PostgreSQL Schedule Engine (with description context)
     let schedule_engine = Arc::new(schedule::ScheduleEngine::new(None).await);
 
-    // Spawn 24/7 background scheduler alert worker
+    // 2.1 Alert Queue: Background worker notifies AI live session & GUI when reminder is due
+    let (alert_queue_tx, mut alert_queue_rx) = tokio::sync::mpsc::channel::<schedule::ScheduleItem>(32);
+
+    // Spawn 24/7 background scheduler alert worker with auto-cleanup queue
     let worker_engine = Arc::clone(&schedule_engine);
     tokio::spawn(async move {
-        worker_engine.start_background_worker().await;
+        worker_engine.start_background_worker(Some(alert_queue_tx)).await;
     });
 
     // 3. Initialize AI Tool Manager (handles all tool declarations and routing)
@@ -58,6 +61,27 @@ async fn main() {
         tool_manager,
     );
 
+    // 8.1 Hook Alert Queue to AI: when reminder is due, instruct Veronica to speak out to user
+    let session_alert = session.clone();
+    let broadcast_alert = broadcast_tx.clone();
+    tokio::spawn(async move {
+        while let Some(item) = alert_queue_rx.recv().await {
+            println!("🔔 [AI Alert Queue]: Instructing Veronica to announce reminder: '{}'", item.title);
+
+            let prompt = format!(
+                "System Notice: It is now time for the user's scheduled task: '{}'. Detailed user context: '{}'. Please immediately speak to the user, reminding them about this warmly and concisely.",
+                item.title, item.description
+            );
+            let _ = session_alert.send_text(&prompt).await;
+
+            let _ = broadcast_alert.send(server::protocol::DaemonMessage::Transcript {
+                speaker: "VERONICA".to_string(),
+                text: format!("🔔 [Reminder Alert] {}: {}", item.title, item.description),
+                is_final: true,
+            });
+        }
+    });
+
     // 9. Start Localhost WebSocket Server for GUI (127.0.0.1:8765)
     if let Err(e) = server::start_server(8765, session.clone(), broadcast_tx.clone()).await {
         eprintln!("⚠️ Failed to bind GUI server on port 8765: {}", e);
@@ -92,7 +116,7 @@ async fn main() {
     println!("  ✨ Project Veronica: Autonomous AI Assistant");
     println!("  🖥️  Environment: {}", env_info);
     println!("  ⚡ Mode: Continuous Voice + Concurrent Text Input");
-    println!("  🐘 Database: PostgreSQL (Schedules & Context)");
+    println!("  🐘 Database: PostgreSQL (Auto-Cleanup Queue Active)");
     if has_mic {
         println!("  🎙️  Microphone: Always Listening (Speak naturally)");
     } else {
