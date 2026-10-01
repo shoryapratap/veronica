@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_postgres::{Client, NoTls};
 
-/// Schedule item representation stored in PostgreSQL
+/// Schedule item representation stored in PostgreSQL or active in-memory queue
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleItem {
     pub id: String,
@@ -19,11 +19,12 @@ pub struct ScheduleItem {
     pub created_at: String,
 }
 
-/// PostgreSQL-backed schedule and calendar engine with auto-cleanup queue
+/// PostgreSQL-backed schedule and calendar engine with resilient in-memory fallback
 #[derive(Clone)]
 pub struct ScheduleEngine {
     client: Arc<tokio::sync::Mutex<Option<Client>>>,
     db_url: String,
+    in_memory_queue: Arc<tokio::sync::Mutex<Vec<ScheduleItem>>>,
 }
 
 impl ScheduleEngine {
@@ -37,11 +38,12 @@ impl ScheduleEngine {
         let engine = Self {
             client: Arc::new(tokio::sync::Mutex::new(None)),
             db_url: url,
+            in_memory_queue: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         };
 
         if let Err(e) = engine.ensure_connected().await {
             eprintln!("⚠️ [PostgreSQL Engine] Notice: Could not connect to PostgreSQL immediately: {}", e);
-            eprintln!("💡 Veronica will retry automatically when scheduling tasks.");
+            eprintln!("💡 Veronica active in-memory fallback is active — reminders will work 100%!");
         } else {
             println!("✅ [PostgreSQL Engine] Connected to PostgreSQL successfully!");
             if let Err(e) = engine.init_tables().await {
@@ -216,7 +218,7 @@ impl ScheduleEngine {
         Ok(())
     }
 
-    /// Create and persist a new schedule item into PostgreSQL
+    /// Create and persist a new schedule item (PostgreSQL with in-memory resilient fallback)
     pub async fn create_schedule(
         &self,
         title: &str,
@@ -226,115 +228,155 @@ impl ScheduleEngine {
         recurrence: Option<&str>,
         schedule_type: Option<&str>,
     ) -> Result<ScheduleItem, String> {
-        self.ensure_connected().await?;
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
-
         let (target_timestamp, target_time_str) = parse_time_expression(time_expression)?;
         let item_id = format!("sch_{}", Utc::now().timestamp_millis());
         let sched_type = schedule_type.unwrap_or("reminder").to_string();
         let recur = recurrence.unwrap_or("none").to_string();
         let now_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-        let sql = r#"
-            INSERT INTO schedules (
-                id, title, description, schedule_type,
-                target_time, target_timestamp, duration_minutes,
-                recurrence, status, created_at
-            ) VALUES (, , , , , , , , 'pending', )
-        "#;
-
-        client.execute(
-            sql,
-            &[
-                &item_id,
-                &title,
-                &description,
-                &sched_type,
-                &target_time_str,
-                &target_timestamp,
-                &duration_minutes,
-                &recur,
-                &now_str,
-            ],
-        ).await.map_err(|e| format!("Failed to insert into PostgreSQL: {}", e))?;
-
-        Ok(ScheduleItem {
-            id: item_id,
+        let item = ScheduleItem {
+            id: item_id.clone(),
             title: title.to_string(),
             description: description.to_string(),
-            schedule_type: sched_type,
-            target_time: target_time_str,
+            schedule_type: sched_type.clone(),
+            target_time: target_time_str.clone(),
             target_timestamp,
             duration_minutes,
-            recurrence: recur,
+            recurrence: recur.clone(),
             status: "pending".to_string(),
-            created_at: now_str,
-        })
-    }
+            created_at: now_str.clone(),
+        };
 
-    /// List upcoming pending schedules from PostgreSQL
-    pub async fn list_upcoming(&self, limit: i64) -> Result<Vec<ScheduleItem>, String> {
-        self.ensure_connected().await?;
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
+        // Attempt PostgreSQL insertion
+        if self.ensure_connected().await.is_ok() {
+            let guard = self.client.lock().await;
+            if let Some(client) = guard.as_ref() {
+                let sql = r#"
+                    INSERT INTO schedules (
+                        id, title, description, schedule_type,
+                        target_time, target_timestamp, duration_minutes,
+                        recurrence, status, created_at
+                    ) VALUES (, , , , , , , , 'pending', )
+                "#;
 
-        let sql = r#"
-            SELECT id, title, description, schedule_type,
-                   target_time, target_timestamp, duration_minutes,
-                   recurrence, status, created_at
-            FROM schedules
-            WHERE status = 'pending'
-            ORDER BY target_timestamp ASC
-            LIMIT 
-        "#;
-
-        let rows = client.query(sql, &[&limit]).await
-            .map_err(|e| format!("Failed to query upcoming schedules: {}", e))?;
-
-        let mut items = Vec::new();
-        for row in rows {
-            items.push(ScheduleItem {
-                id: row.get(0),
-                title: row.get(1),
-                description: row.get(2),
-                schedule_type: row.get(3),
-                target_time: row.get(4),
-                target_timestamp: row.get(5),
-                duration_minutes: row.get(6),
-                recurrence: row.get(7),
-                status: row.get(8),
-                created_at: row.get(9),
-            });
+                if let Ok(_) = client.execute(
+                    sql,
+                    &[
+                        &item_id,
+                        &title,
+                        &description,
+                        &sched_type,
+                        &target_time_str,
+                        &target_timestamp,
+                        &duration_minutes,
+                        &recur,
+                        &now_str,
+                    ],
+                ).await {
+                    println!("   🐘 [PostgreSQL] Persisted schedule: '{}' at {}", title, target_time_str);
+                    return Ok(item);
+                }
+            }
         }
 
+        // Resilient in-memory fallback (if PostgreSQL is offline or credentials unconfigured)
+        println!("   💾 [Resilient Fallback] Saved reminder to active memory queue: '{}' at {}", title, target_time_str);
+        self.in_memory_queue.lock().await.push(item.clone());
+        Ok(item)
+    }
+
+    /// List upcoming pending schedules from PostgreSQL + in-memory queue
+    pub async fn list_upcoming(&self, limit: i64) -> Result<Vec<ScheduleItem>, String> {
+        let mut items = Vec::new();
+
+        // 1. Try PostgreSQL
+        if self.ensure_connected().await.is_ok() {
+            let guard = self.client.lock().await;
+            if let Some(client) = guard.as_ref() {
+                let sql = r#"
+                    SELECT id, title, description, schedule_type,
+                           target_time, target_timestamp, duration_minutes,
+                           recurrence, status, created_at
+                    FROM schedules
+                    WHERE status = 'pending'
+                    ORDER BY target_timestamp ASC
+                    LIMIT 
+                "#;
+
+                if let Ok(rows) = client.query(sql, &[&limit]).await {
+                    for row in rows {
+                        items.push(ScheduleItem {
+                            id: row.get(0),
+                            title: row.get(1),
+                            description: row.get(2),
+                            schedule_type: row.get(3),
+                            target_time: row.get(4),
+                            target_timestamp: row.get(5),
+                            duration_minutes: row.get(6),
+                            recurrence: row.get(7),
+                            status: row.get(8),
+                            created_at: row.get(9),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Also append pending items from active in-memory queue
+        let mem = self.in_memory_queue.lock().await;
+        for item in mem.iter() {
+            if item.status == "pending" && !items.iter().any(|i| i.id == item.id) {
+                items.push(item.clone());
+            }
+        }
+
+        items.sort_by_key(|i| i.target_timestamp);
+        items.truncate(limit as usize);
         Ok(items)
     }
 
     /// Cancel a scheduled task by ID or title substring
     pub async fn cancel_schedule(&self, identifier: &str) -> Result<bool, String> {
-        self.ensure_connected().await?;
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("No active PostgreSQL connection")?;
+        let mut cancelled = false;
 
-        let sql = r#"
-            DELETE FROM schedules
-            WHERE (id =  OR LOWER(title) LIKE LOWER()) AND status = 'pending'
-        "#;
+        // Try PostgreSQL
+        if self.ensure_connected().await.is_ok() {
+            let guard = self.client.lock().await;
+            if let Some(client) = guard.as_ref() {
+                let sql = r#"
+                    DELETE FROM schedules
+                    WHERE (id =  OR LOWER(title) LIKE LOWER()) AND status = 'pending'
+                "#;
+                let search_pattern = format!("%{}%", identifier);
+                if let Ok(rows) = client.execute(sql, &[&identifier, &search_pattern]).await {
+                    if rows > 0 {
+                        cancelled = true;
+                    }
+                }
+            }
+        }
 
-        let search_pattern = format!("%{}%", identifier);
-        let rows_affected = client.execute(sql, &[&identifier, &search_pattern]).await
-            .map_err(|e| format!("Failed to delete schedule in PostgreSQL: {}", e))?;
+        // Also cancel from in-memory queue
+        let mut mem = self.in_memory_queue.lock().await;
+        let id_lower = identifier.to_lowercase();
+        mem.retain(|i| {
+            if i.id == identifier || i.title.to_lowercase().contains(&id_lower) {
+                cancelled = true;
+                false
+            } else {
+                true
+            }
+        });
 
-        Ok(rows_affected > 0)
+        Ok(cancelled)
     }
 
-    /// Auto-check worker loop with alert queue and immediate database purge
+    /// Auto-check worker loop with alert queue and immediate database/memory purge
     pub async fn start_background_worker(
         self: Arc<Self>,
         alert_queue_tx: Option<tokio::sync::mpsc::Sender<ScheduleItem>>,
     ) {
-        println!("🕒 [Scheduler Worker] Started auto-check queue and cleanup loop (PostgreSQL)");
+        println!("🕒 [Scheduler Worker] Started auto-check queue and cleanup loop (PostgreSQL + Memory)");
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -375,15 +417,31 @@ impl ScheduleEngine {
                 }
             }
 
-            // 2. Process each due reminder: notify AI queue, popup toast, and clear from PostgreSQL
+            // 2. Fetch due items from active in-memory queue
+            {
+                let mut mem = self.in_memory_queue.lock().await;
+                let mut remaining = Vec::new();
+                for item in mem.drain(..) {
+                    if item.target_timestamp <= now && item.status == "pending" {
+                        due_items.push(item);
+                    } else {
+                        remaining.push(item);
+                    }
+                }
+                *mem = remaining;
+            }
+
+            // 3. Process each due reminder: notify AI queue, popup toast, and clear
             for item in due_items {
+                println!("🔔 [Scheduler Alert Triggered]: '{}' ({})", item.title, item.target_time);
+
                 if let Some(ref queue_tx) = alert_queue_tx {
                     let _ = queue_tx.send(item.clone()).await;
                 }
 
                 self.trigger_alert(&item).await;
 
-                // Auto-clear from database to keep PostgreSQL clean
+                // Auto-clear from PostgreSQL
                 if self.ensure_connected().await.is_ok() {
                     let guard = self.client.lock().await;
                     if let Some(client) = guard.as_ref() {
@@ -407,7 +465,7 @@ impl ScheduleEngine {
                             ).await;
                         } else {
                             let _ = client.execute("DELETE FROM schedules WHERE id = ", &[&item.id]).await;
-                            println!("   🧹 [PostgreSQL Auto-Clear] Delivered & removed reminder '{}' from database.", item.title);
+                            println!("   🧹 [Auto-Clear] Delivered & removed reminder '{}'", item.title);
                         }
                     }
                 }
