@@ -167,24 +167,50 @@ impl ScheduleEngine {
         }
     }
 
-    /// Ensure active connection to PostgreSQL
+    /// Ensure active connection to PostgreSQL (Supports both Supabase SSL and Localhost)
     async fn ensure_connected(&self) -> Result<(), String> {
         let mut guard = self.client.lock().await;
         if guard.is_some() {
             return Ok(());
         }
 
-        match tokio_postgres::connect(&self.db_url, NoTls).await {
-            Ok((client, connection)) => {
-                tokio::spawn(async move {
-                    if let Err(e) = connection.await {
-                        eprintln!("⚠️ [PostgreSQL] Connection stream closed: {}", e);
-                    }
-                });
-                *guard = Some(client);
-                Ok(())
+        let is_ssl = self.db_url.contains("sslmode=require")
+            || self.db_url.contains("sslmode=verify-full")
+            || self.db_url.contains("supabase.co")
+            || (!self.db_url.contains("localhost") && !self.db_url.contains("127.0.0.1"));
+
+        if is_ssl {
+            let builder = native_tls::TlsConnector::builder();
+            let tls_connector = match builder.build() {
+                Ok(connector) => postgres_native_tls::MakeTlsConnector::new(connector),
+                Err(e) => return Err(format!("Failed to build TLS connector: {}", e)),
+            };
+
+            match tokio_postgres::connect(&self.db_url, tls_connector).await {
+                Ok((client, connection)) => {
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            eprintln!("⚠️ [PostgreSQL SSL] Connection stream closed: {}", e);
+                        }
+                    });
+                    *guard = Some(client);
+                    Ok(())
+                }
+                Err(e) => Err(format!("PostgreSQL SSL connection failed (URL: {}): {}", self.db_url, e)),
             }
-            Err(e) => Err(format!("PostgreSQL connection failed (URL: {}): {}", self.db_url, e)),
+        } else {
+            match tokio_postgres::connect(&self.db_url, NoTls).await {
+                Ok((client, connection)) => {
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            eprintln!("⚠️ [PostgreSQL] Connection stream closed: {}", e);
+                        }
+                    });
+                    *guard = Some(client);
+                    Ok(())
+                }
+                Err(e) => Err(format!("PostgreSQL connection failed (URL: {}): {}", self.db_url, e)),
+            }
         }
     }
 
