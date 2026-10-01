@@ -42,20 +42,14 @@ async fn main() {
     // 5. Detect system environment
     let env_info = system::detector::detect_environment();
 
-    // 6. Connect to Gemini Live WebSocket
-    let live_client = match ai::GeminiLiveClient::connect(&api_key, &live_model, &voice_name).await {
-        Ok(client) => client,
-        Err(err) => {
-            eprintln!("❌ [Gemini Live] Connection failed: {}", err);
-            return;
-        }
-    };
-
-    // 7. Initialize GUI Event Broadcast Channel
+    // 6. Initialize GUI Event Broadcast Channel
     let (broadcast_tx, _) = tokio::sync::broadcast::channel::<server::protocol::DaemonMessage>(128);
 
-    // 8. Start full-duplex Live Session with GUI broadcasting & Tool Manager
-    let session = live_client.start_duplex_session(
+    // 7. Start Resilient Auto-Reconnecting Live Session with Tool Manager
+    let session = ai::GeminiLiveClient::start_resilient_session(
+        api_key,
+        live_model,
+        voice_name.clone(),
         audio_player.clone(),
         Some(broadcast_tx.clone()),
         tool_manager,
