@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "veronica",
-        "width": 800,
-        "height": 600
+        "title": "Project Veronica - Autonomous AI",
+        "width": 1366,
+        "height": 860,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "resizable": true
       }
     ],
     "security": {
@@ -29,6 +32,7 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
+      "icons/veronica_logo.ico",
       "icons/icon.ico"
     ]
   }

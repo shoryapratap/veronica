@@ -1,63 +1,107 @@
 import { useState } from "react";
-import { StatusBar } from "./components/StatusBar";
-import { ConnectionStatus } from "./types/protocol";
-import { Bot, Terminal, Mic, ShieldCheck } from "lucide-react";
+import { StatusBar, TabType } from "./components/StatusBar";
+import { AuraOrb } from "./components/AuraOrb";
+import { ChatFeed } from "./components/ChatFeed";
+import { InputBar } from "./components/InputBar";
+import { FeedPlaceholders } from "./components/FeedPlaceholders";
+import { MainWindow } from "./components/MainWindow";
+import { EarthGlobe } from "./components/EarthGlobe";
+import { AppsPage } from "./components/AppsPage";
+import { SettingsPage } from "./components/SettingsPage";
+import { useDaemonSocket } from "./hooks/useDaemonSocket";
+import { MessageSquare } from "lucide-react";
 import "./App.css";
 
 function App() {
-  // Mock status for now until we connect to the live daemon socket
-  const [status] = useState<ConnectionStatus>("ONLINE");
-  const [cpu] = useState<number>(4.2);
-  const [ram] = useState<string>("142 / 16384 MB");
+  const { status, assistantState, cpu, ram, messages, sendTextMessage } =
+    useDaemonSocket();
+
+  const [activeTab, setActiveTab] = useState<TabType>("main");
+  const isOnline = status === "ONLINE";
+
+  const handleLaunchApp = (target: string) => {
+    sendTextMessage(`launch ${target}`);
+  };
+
+  const handleSwitchModel = (newModel: string) => {
+    sendTextMessage(`/model ${newModel}`);
+  };
 
   return (
-    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-indigo-500/30 select-none">
-      {/* Top Status Bar */}
-      <StatusBar status={status} cpu={cpu} ram={ram} />
+    <div className="flex flex-col h-screen w-screen bg-black text-zinc-100 font-sans selection:bg-zinc-700/50 select-none overflow-hidden">
+      {/* 1. Top System Bar with Brand, Navbar (Main / Apps / Settings), and Telemetry */}
+      <StatusBar
+        status={status}
+        cpu={cpu}
+        ram={ram}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+      />
 
-      {/* Main Center Stage */}
-      <main className="flex-1 flex flex-col items-center justify-center p-8">
-        <div className="relative flex items-center justify-center mb-8">
-          {/* Glowing Aura Ring */}
-          <div className="absolute w-36 h-36 rounded-full bg-indigo-500/20 blur-2xl animate-pulse" />
-          <div className="relative w-28 h-28 rounded-3xl bg-zinc-900 border border-zinc-800/80 shadow-2xl flex items-center justify-center">
-            <Bot className="w-14 h-14 text-indigo-400" />
-          </div>
+      {/* 2. Page Content Router */}
+      {activeTab === "main" && (
+        <div className="flex-1 flex overflow-hidden p-3 gap-3 min-h-0">
+          {/* ======================================================== */}
+          {/* LEFT SECTION: 2 Small Windows (Screen/Cam) + Chat Feed */}
+          {/* ======================================================== */}
+          <section className="w-[340px] xl:w-[380px] 2xl:w-[420px] flex flex-col gap-3 shrink-0 h-full">
+            {/* Top: 2 Small Windows (Screen Sharing & Camera) */}
+            <FeedPlaceholders />
+
+            {/* Bottom: Chat Section (Expanded Feed) */}
+            <div className="flex-1 flex flex-col bg-zinc-950/70 backdrop-blur-xl border border-zinc-800/60 rounded-xl overflow-hidden min-h-0 shadow-xl">
+              {/* Chat Header */}
+              <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-zinc-800/60 shrink-0">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="w-3.5 h-3.5 text-zinc-400" />
+                  <span className="text-xs font-mono font-medium text-zinc-200 tracking-wider uppercase">
+                    Communication Log
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-[10px] text-zinc-400 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-zinc-300 animate-pulse" />
+                  <span>{messages.length} MSG</span>
+                </div>
+              </div>
+
+              {/* Chat Feed */}
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <ChatFeed messages={messages} />
+              </div>
+            </div>
+          </section>
+
+          {/* ======================================================== */}
+          {/* MID SECTION: AI Orb + Main Window + Text Input Bar (Middle) */}
+          {/* ======================================================== */}
+          <section className="flex-1 flex flex-col gap-3 min-w-0 h-full">
+            {/* Top: Aura Orb Center Stage */}
+            <div className="bg-zinc-950/70 backdrop-blur-xl rounded-2xl py-3 px-6 shrink-0 relative overflow-hidden flex flex-col items-center justify-center shadow-xl">
+              {/* Visual AI Presence Orb */}
+              <AuraOrb state={assistantState} />
+            </div>
+
+            {/* Middle: Empty Main Window (Clean Canvas) */}
+            <MainWindow />
+
+            {/* Bottom: Text Input Bar (Centered in the middle section) */}
+            <InputBar onSendMessage={sendTextMessage} disabled={!isOnline} />
+          </section>
+
+          {/* ======================================================== */}
+          {/* RIGHT SECTION: 3D Earth Globe */}
+          {/* ======================================================== */}
+          <section className="w-[340px] xl:w-[380px] 2xl:w-[420px] flex flex-col shrink-0 h-full">
+            <EarthGlobe />
+          </section>
         </div>
+      )}
 
-        <h1 className="text-3xl font-bold tracking-tight mb-2 text-zinc-100">
-          Project Veronica
-        </h1>
-        <p className="text-sm font-mono text-zinc-400 mb-8 max-w-sm text-center">
-          Autonomous 3-Tier Decoupled AI System
-        </p>
+      {/* 3. Apps Page View */}
+      {activeTab === "apps" && <AppsPage onLaunchApp={handleLaunchApp} />}
 
-        {/* Quick Diagnostics Grid */}
-        <div className="grid grid-cols-3 gap-4 w-full max-w-md text-xs font-mono">
-          <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/50 flex flex-col items-center gap-1.5">
-            <Terminal className="w-4 h-4 text-emerald-400" />
-            <span className="text-zinc-400">Daemon</span>
-            <span className="text-emerald-400 font-semibold">127.0.0.1:8765</span>
-          </div>
-
-          <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/50 flex flex-col items-center gap-1.5">
-            <Mic className="w-4 h-4 text-cyan-400" />
-            <span className="text-zinc-400">Audio Pipeline</span>
-            <span className="text-cyan-400 font-semibold">Ready (CPAL)</span>
-          </div>
-
-          <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800/50 flex flex-col items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-indigo-400" />
-            <span className="text-zinc-400">Architecture</span>
-            <span className="text-indigo-400 font-semibold">Decoupled</span>
-          </div>
-        </div>
-      </main>
-
-      {/* Bottom Footer */}
-      <footer className="px-6 py-3 border-t border-zinc-900 text-center text-xs font-mono text-zinc-600">
-        VERONICA AI // SYSTEM FACE v0.1.0
-      </footer>
+      {/* 4. Settings Page View */}
+      {activeTab === "settings" && <SettingsPage onSwitchModel={handleSwitchModel} />}
     </div>
   );
 }
