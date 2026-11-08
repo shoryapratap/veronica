@@ -63,14 +63,14 @@ async fn main() {
             println!("🔔 [AI Alert Queue]: Instructing Veronica to announce reminder: '{}'", item.title);
 
             let prompt = format!(
-                "System Notice: It is now time for the user's scheduled task: '{}'. Detailed user context: '{}'. Please immediately speak to the user, reminding them about this warmly and concisely.",
+                "Veronica, verbally announce this scheduled task out loud to me right now. Start by addressing me as 'Sir' (e.g., 'Sir, it's time to {}'). Context: '{}'. Keep it concise and natural.",
                 item.title, item.description
             );
             let _ = session_alert.send_text(&prompt).await;
 
             let _ = broadcast_alert.send(server::protocol::DaemonMessage::Transcript {
                 speaker: "VERONICA".to_string(),
-                text: format!("🔔 [Reminder Alert] {}: {}", item.title, item.description),
+                text: format!("🔔 Sir, it's time to {}. ({})", item.title, item.description),
                 is_final: true,
             });
         }

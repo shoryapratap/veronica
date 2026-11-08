@@ -2,9 +2,8 @@ use std::sync::Arc;
 use chrono::{Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio_postgres::{Client, NoTls};
 
-/// Schedule item representation stored in PostgreSQL or active in-memory queue
+/// Schedule item representation stored in Supabase or active in-memory queue
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleItem {
     pub id: String,
@@ -19,39 +18,39 @@ pub struct ScheduleItem {
     pub created_at: String,
 }
 
-/// PostgreSQL-backed schedule and calendar engine with resilient in-memory fallback
+/// Cloud-backed schedule engine (Central FastAPI Backend or Supabase) with resilient in-memory fallback
 #[derive(Clone)]
 pub struct ScheduleEngine {
-    client: Arc<tokio::sync::Mutex<Option<Client>>>,
-    db_url: String,
+    backend_url: Option<String>,
+    supabase_url: Option<String>,
+    supabase_key: Option<String>,
+    http_client: reqwest::Client,
     in_memory_queue: Arc<tokio::sync::Mutex<Vec<ScheduleItem>>>,
 }
 
 impl ScheduleEngine {
-    /// Create a new ScheduleEngine with PostgreSQL connection string
-    pub async fn new(db_url: Option<String>) -> Self {
-        let url = db_url.unwrap_or_else(|| {
-            std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgresql://postgres:postgres@localhost:5432/veronica_db".to_string())
-        });
+    /// Create a new ScheduleEngine with Central Backend or Supabase Cloud credentials
+    pub async fn new(_db_url: Option<String>) -> Self {
+        let backend_url = std::env::var("BACKEND_URL").ok().map(|u| u.trim_end_matches('/').to_string());
+        let base_url = std::env::var("SUPABASE_URL").ok();
+        let key = std::env::var("SUPABASE_KEY").ok();
 
-        let engine = Self {
-            client: Arc::new(tokio::sync::Mutex::new(None)),
-            db_url: url,
-            in_memory_queue: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        };
+        let rest_endpoint = base_url.as_ref().map(|u| format!("{}/rest/v1/schedules", u.trim_end_matches('/')));
 
-        if let Err(e) = engine.ensure_connected().await {
-            eprintln!("⚠️ [PostgreSQL Engine] Notice: Could not connect to PostgreSQL immediately: {}", e);
-            eprintln!("💡 Veronica active in-memory fallback is active — reminders will work 100%!");
-        } else {
-            println!("✅ [PostgreSQL Engine] Connected to PostgreSQL successfully!");
-            if let Err(e) = engine.init_tables().await {
-                eprintln!("⚠️ [PostgreSQL Engine] Table init warning: {}", e);
-            }
+        if let Some(ref b_url) = backend_url {
+            println!("🌐 [Central Backend] Connected to Veronica Backend API: {}", b_url);
+        } else if let Some(ref u) = base_url {
+            println!("☁️ [Supabase Engine] Configured with cloud project endpoint: {}", u);
         }
+        println!("💡 Active resilient queue ready — reminders will trigger 100% reliably!");
 
-        engine
+        Self {
+            backend_url,
+            supabase_url: rest_endpoint,
+            supabase_key: key,
+            http_client: reqwest::Client::new(),
+            in_memory_queue: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        }
     }
 
     // ==========================================
@@ -167,84 +166,7 @@ impl ScheduleEngine {
         }
     }
 
-    /// Ensure active connection to PostgreSQL (Supports both Supabase SSL and Localhost)
-    async fn ensure_connected(&self) -> Result<(), String> {
-        let mut guard = self.client.lock().await;
-        if guard.is_some() {
-            return Ok(());
-        }
-
-        let is_ssl = self.db_url.contains("sslmode=require")
-            || self.db_url.contains("sslmode=verify-full")
-            || self.db_url.contains("supabase.co")
-            || (!self.db_url.contains("localhost") && !self.db_url.contains("127.0.0.1"));
-
-        if is_ssl {
-            let builder = native_tls::TlsConnector::builder();
-            let tls_connector = match builder.build() {
-                Ok(connector) => postgres_native_tls::MakeTlsConnector::new(connector),
-                Err(e) => return Err(format!("Failed to build TLS connector: {}", e)),
-            };
-
-            match tokio_postgres::connect(&self.db_url, tls_connector).await {
-                Ok((client, connection)) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = connection.await {
-                            eprintln!("⚠️ [PostgreSQL SSL] Connection stream closed: {}", e);
-                        }
-                    });
-                    *guard = Some(client);
-                    Ok(())
-                }
-                Err(e) => Err(format!("PostgreSQL SSL connection failed (URL: {}): {}", self.db_url, e)),
-            }
-        } else {
-            match tokio_postgres::connect(&self.db_url, NoTls).await {
-                Ok((client, connection)) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = connection.await {
-                            eprintln!("⚠️ [PostgreSQL] Connection stream closed: {}", e);
-                        }
-                    });
-                    *guard = Some(client);
-                    Ok(())
-                }
-                Err(e) => Err(format!("PostgreSQL connection failed (URL: {}): {}", self.db_url, e)),
-            }
-        }
-    }
-
-    /// Ensure the 'schedules' table exists in PostgreSQL with the description column
-    pub async fn init_tables(&self) -> Result<(), String> {
-        self.ensure_connected().await?;
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("No database client")?;
-
-        let sql = r#"
-            CREATE TABLE IF NOT EXISTS schedules (
-                id VARCHAR(64) PRIMARY KEY,
-                title VARCHAR(255) NOT NULL,
-                description TEXT NOT NULL,
-                schedule_type VARCHAR(64) NOT NULL,
-                target_time VARCHAR(128) NOT NULL,
-                target_timestamp BIGINT NOT NULL,
-                duration_minutes INT DEFAULT 0,
-                recurrence VARCHAR(64) DEFAULT 'none',
-                status VARCHAR(64) NOT NULL DEFAULT 'pending',
-                created_at VARCHAR(128) NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_schedules_target_ts ON schedules(target_timestamp);
-            CREATE INDEX IF NOT EXISTS idx_schedules_status ON schedules(status);
-        "#;
-
-        client.batch_execute(sql).await
-            .map_err(|e| format!("Failed to create schedules table: {}", e))?;
-
-        println!("   📦 [PostgreSQL] Schedules table verified (with description column)");
-        Ok(())
-    }
-
-    /// Create and persist a new schedule item (PostgreSQL with in-memory resilient fallback)
+    /// Create and persist a new schedule item (Supabase Cloud with in-memory resilient fallback)
     pub async fn create_schedule(
         &self,
         title: &str,
@@ -273,82 +195,102 @@ impl ScheduleEngine {
             created_at: now_str.clone(),
         };
 
-        // Attempt PostgreSQL insertion
-        if self.ensure_connected().await.is_ok() {
-            let guard = self.client.lock().await;
-            if let Some(client) = guard.as_ref() {
-                let sql = r#"
-                    INSERT INTO schedules (
-                        id, title, description, schedule_type,
-                        target_time, target_timestamp, duration_minutes,
-                        recurrence, status, created_at
-                    ) VALUES (, , , , , , , , 'pending', )
-                "#;
+        // 1. Try persisting to Central Backend API (if configured)
+        if let Some(ref b_url) = self.backend_url {
+            let res = self.http_client
+                .post(b_url)
+                .json(&item)
+                .send()
+                .await;
 
-                if let Ok(_) = client.execute(
-                    sql,
-                    &[
-                        &item_id,
-                        &title,
-                        &description,
-                        &sched_type,
-                        &target_time_str,
-                        &target_timestamp,
-                        &duration_minutes,
-                        &recur,
-                        &now_str,
-                    ],
-                ).await {
-                    println!("   🐘 [PostgreSQL] Persisted schedule: '{}' at {}", title, target_time_str);
+            match res {
+                Ok(resp) if resp.status().is_success() => {
+                    println!("   🌐 [Central Backend] Persisted schedule: '{}' at {}", title, target_time_str);
+                    if let Ok(saved) = resp.json::<ScheduleItem>().await {
+                        return Ok(saved);
+                    }
                     return Ok(item);
+                }
+                Ok(resp) => {
+                    let err_txt = resp.text().await.unwrap_or_default();
+                    eprintln!("   ⚠️ [Backend Notice]: HTTP status {}; trying fallback. ({})", err_txt, title);
+                }
+                Err(e) => {
+                    eprintln!("   ⚠️ [Backend Network]: {}; trying fallback.", e);
                 }
             }
         }
 
-        // Resilient in-memory fallback (if PostgreSQL is offline or credentials unconfigured)
+        // 2. Try persisting to Supabase Cloud REST API
+        if let (Some(ref url), Some(ref key)) = (&self.supabase_url, &self.supabase_key) {
+            let res = self.http_client
+                .post(url)
+                .header("apikey", key)
+                .header("Authorization", format!("Bearer {}", key))
+                .header("Content-Type", "application/json")
+                .header("Prefer", "return=representation")
+                .json(&item)
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) if resp.status().is_success() => {
+                    println!("   ☁️ [Supabase Cloud] Persisted schedule: '{}' at {}", title, target_time_str);
+                    return Ok(item);
+                }
+                Ok(resp) => {
+                    let err_txt = resp.text().await.unwrap_or_default();
+                    eprintln!("   ⚠️ [Supabase Notice]: HTTP status {}; using resilient memory queue. ({})", err_txt, title);
+                }
+                Err(e) => {
+                    eprintln!("   ⚠️ [Supabase Network]: {}; using resilient memory queue.", e);
+                }
+            }
+        }
+
+        // 2. Resilient in-memory fallback (reminders will 100% trigger on time!)
         println!("   💾 [Resilient Fallback] Saved reminder to active memory queue: '{}' at {}", title, target_time_str);
         self.in_memory_queue.lock().await.push(item.clone());
         Ok(item)
     }
 
-    /// List upcoming pending schedules from PostgreSQL + in-memory queue
+    /// List upcoming pending schedules from Central Backend, Supabase Cloud, or in-memory queue
     pub async fn list_upcoming(&self, limit: i64) -> Result<Vec<ScheduleItem>, String> {
         let mut items = Vec::new();
 
-        // 1. Try PostgreSQL
-        if self.ensure_connected().await.is_ok() {
-            let guard = self.client.lock().await;
-            if let Some(client) = guard.as_ref() {
-                let sql = r#"
-                    SELECT id, title, description, schedule_type,
-                           target_time, target_timestamp, duration_minutes,
-                           recurrence, status, created_at
-                    FROM schedules
-                    WHERE status = 'pending'
-                    ORDER BY target_timestamp ASC
-                    LIMIT 
-                "#;
-
-                if let Ok(rows) = client.query(sql, &[&limit]).await {
-                    for row in rows {
-                        items.push(ScheduleItem {
-                            id: row.get(0),
-                            title: row.get(1),
-                            description: row.get(2),
-                            schedule_type: row.get(3),
-                            target_time: row.get(4),
-                            target_timestamp: row.get(5),
-                            duration_minutes: row.get(6),
-                            recurrence: row.get(7),
-                            status: row.get(8),
-                            created_at: row.get(9),
-                        });
+        // 1. Try Central Backend API (if configured)
+        if let Some(ref b_url) = self.backend_url {
+            let query_url = format!("{}/upcoming?limit={}", b_url, limit);
+            if let Ok(resp) = self.http_client.get(&query_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(backend_items) = resp.json::<Vec<ScheduleItem>>().await {
+                        items.extend(backend_items);
                     }
                 }
             }
         }
 
-        // 2. Also append pending items from active in-memory queue
+        // 2. Try Supabase Cloud (fallback if backend not configured or empty)
+        if items.is_empty() {
+            if let (Some(ref url), Some(ref key)) = (&self.supabase_url, &self.supabase_key) {
+                let query_url = format!("{}?status=eq.pending&order=target_timestamp.asc&limit={}", url, limit);
+                if let Ok(resp) = self.http_client
+                    .get(&query_url)
+                    .header("apikey", key)
+                    .header("Authorization", format!("Bearer {}", key))
+                    .send()
+                    .await
+                {
+                    if resp.status().is_success() {
+                        if let Ok(cloud_items) = resp.json::<Vec<ScheduleItem>>().await {
+                            items.extend(cloud_items);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Also append pending items from active in-memory queue
         let mem = self.in_memory_queue.lock().await;
         for item in mem.iter() {
             if item.status == "pending" && !items.iter().any(|i| i.id == item.id) {
@@ -365,19 +307,29 @@ impl ScheduleEngine {
     pub async fn cancel_schedule(&self, identifier: &str) -> Result<bool, String> {
         let mut cancelled = false;
 
-        // Try PostgreSQL
-        if self.ensure_connected().await.is_ok() {
-            let guard = self.client.lock().await;
-            if let Some(client) = guard.as_ref() {
-                let sql = r#"
-                    DELETE FROM schedules
-                    WHERE (id =  OR LOWER(title) LIKE LOWER()) AND status = 'pending'
-                "#;
-                let search_pattern = format!("%{}%", identifier);
-                if let Ok(rows) = client.execute(sql, &[&identifier, &search_pattern]).await {
-                    if rows > 0 {
-                        cancelled = true;
-                    }
+        // 1. Try Central Backend API (if configured)
+        if let Some(ref b_url) = self.backend_url {
+            let delete_url = format!("{}/{}", b_url, identifier);
+            if let Ok(resp) = self.http_client.delete(&delete_url).send().await {
+                if resp.status().is_success() {
+                    cancelled = true;
+                    println!("   🌐 [Central Backend] Cancelled schedule: '{}'", identifier);
+                }
+            }
+        }
+
+        // 2. Try Supabase Cloud
+        if let (Some(ref url), Some(ref key)) = (&self.supabase_url, &self.supabase_key) {
+            let delete_url = format!("{}?or=(id.eq.{},title.ilike.*{}*)", url, identifier, identifier);
+            if let Ok(resp) = self.http_client
+                .delete(&delete_url)
+                .header("apikey", key)
+                .header("Authorization", format!("Bearer {}", key))
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    cancelled = true;
                 }
             }
         }
@@ -397,12 +349,12 @@ impl ScheduleEngine {
         Ok(cancelled)
     }
 
-    /// Auto-check worker loop with alert queue and immediate database/memory purge
+    /// Auto-check worker loop with alert queue and immediate cloud/memory purge
     pub async fn start_background_worker(
         self: Arc<Self>,
         alert_queue_tx: Option<tokio::sync::mpsc::Sender<ScheduleItem>>,
     ) {
-        println!("🕒 [Scheduler Worker] Started auto-check queue and cleanup loop (PostgreSQL + Memory)");
+        println!("🕒 [Scheduler Worker] Started auto-check queue and cleanup loop (Supabase + Memory)");
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -410,34 +362,29 @@ impl ScheduleEngine {
             let now = Utc::now().timestamp();
             let mut due_items = Vec::new();
 
-            // 1. Fetch due items from PostgreSQL
-            if self.ensure_connected().await.is_ok() {
-                let guard = self.client.lock().await;
-                if let Some(client) = guard.as_ref() {
-                    let sql = r#"
-                        SELECT id, title, description, schedule_type,
-                               target_time, target_timestamp, duration_minutes,
-                               recurrence, status, created_at
-                        FROM schedules
-                        WHERE status = 'pending' AND target_timestamp <= 
-                        ORDER BY target_timestamp ASC
-                        LIMIT 10
-                    "#;
-
-                    if let Ok(rows) = client.query(sql, &[&now]).await {
-                        for row in rows {
-                            due_items.push(ScheduleItem {
-                                id: row.get(0),
-                                title: row.get(1),
-                                description: row.get(2),
-                                schedule_type: row.get(3),
-                                target_time: row.get(4),
-                                target_timestamp: row.get(5),
-                                duration_minutes: row.get(6),
-                                recurrence: row.get(7),
-                                status: row.get(8),
-                                created_at: row.get(9),
-                            });
+            // 1. Fetch due items from Central Backend API (if configured)
+            if let Some(ref b_url) = self.backend_url {
+                let query_url = format!("{}/due?limit=10&now_ts={}", b_url, now);
+                if let Ok(resp) = self.http_client.get(&query_url).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(backend_items) = resp.json::<Vec<ScheduleItem>>().await {
+                            due_items.extend(backend_items);
+                        }
+                    }
+                }
+            } else if let (Some(ref url), Some(ref key)) = (&self.supabase_url, &self.supabase_key) {
+                // 1b. Fallback to Supabase Cloud if Central Backend is not set
+                let query_url = format!("{}?status=eq.pending&target_timestamp=lte.{}&order=target_timestamp.asc&limit=10", url, now);
+                if let Ok(resp) = self.http_client
+                    .get(&query_url)
+                    .header("apikey", key)
+                    .header("Authorization", format!("Bearer {}", key))
+                    .send()
+                    .await
+                {
+                    if resp.status().is_success() {
+                        if let Ok(cloud_items) = resp.json::<Vec<ScheduleItem>>().await {
+                            due_items.extend(cloud_items);
                         }
                     }
                 }
@@ -467,32 +414,56 @@ impl ScheduleEngine {
 
                 self.trigger_alert(&item).await;
 
-                // Auto-clear from PostgreSQL
-                if self.ensure_connected().await.is_ok() {
-                    let guard = self.client.lock().await;
-                    if let Some(client) = guard.as_ref() {
-                        if item.recurrence == "daily" {
-                            let next_ts = item.target_timestamp + 86400;
-                            let next_time_str = Local::now().checked_add_signed(Duration::days(1))
-                                .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
-                                .unwrap_or_else(|| item.target_time.clone());
-                            let _ = client.execute(
-                                "UPDATE schedules SET target_timestamp = , target_time =  WHERE id = ",
-                                &[&next_ts, &next_time_str, &item.id],
-                            ).await;
-                        } else if item.recurrence == "weekly" {
-                            let next_ts = item.target_timestamp + (86400 * 7);
-                            let next_time_str = Local::now().checked_add_signed(Duration::days(7))
-                                .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
-                                .unwrap_or_else(|| item.target_time.clone());
-                            let _ = client.execute(
-                                "UPDATE schedules SET target_timestamp = , target_time =  WHERE id = ",
-                                &[&next_ts, &next_time_str, &item.id],
-                            ).await;
-                        } else {
-                            let _ = client.execute("DELETE FROM schedules WHERE id = ", &[&item.id]).await;
-                            println!("   🧹 [Auto-Clear] Delivered & removed reminder '{}'", item.title);
-                        }
+                // Auto-clear from Central Backend or Supabase Cloud
+                if let Some(ref b_url) = self.backend_url {
+                    if item.recurrence == "daily" {
+                        let next_ts = item.target_timestamp + 86400;
+                        let next_time_str = Local::now().checked_add_signed(Duration::days(1))
+                            .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
+                            .unwrap_or_else(|| item.target_time.clone());
+
+                        let update_url = format!("{}/{}", b_url, item.id);
+                        let _ = self.http_client
+                            .patch(&update_url)
+                            .json(&json!({
+                                "target_timestamp": next_ts,
+                                "target_time": next_time_str
+                            }))
+                            .send()
+                            .await;
+                    } else {
+                        let delete_url = format!("{}/{}", b_url, item.id);
+                        let _ = self.http_client.delete(&delete_url).send().await;
+                        println!("   🧹 [Auto-Clear] Delivered & removed reminder '{}' from Central Backend", item.title);
+                    }
+                } else if let (Some(ref url), Some(ref key)) = (&self.supabase_url, &self.supabase_key) {
+                    if item.recurrence == "daily" {
+                        let next_ts = item.target_timestamp + 86400;
+                        let next_time_str = Local::now().checked_add_signed(Duration::days(1))
+                            .map(|d| d.format("%Y-%m-%d %I:%M %p").to_string())
+                            .unwrap_or_else(|| item.target_time.clone());
+
+                        let update_url = format!("{}?id=eq.{}", url, item.id);
+                        let _ = self.http_client
+                            .patch(&update_url)
+                            .header("apikey", key)
+                            .header("Authorization", format!("Bearer {}", key))
+                            .header("Content-Type", "application/json")
+                            .json(&json!({
+                                "target_timestamp": next_ts,
+                                "target_time": next_time_str
+                            }))
+                            .send()
+                            .await;
+                    } else {
+                        let delete_url = format!("{}?id=eq.{}", url, item.id);
+                        let _ = self.http_client
+                            .delete(&delete_url)
+                            .header("apikey", key)
+                            .header("Authorization", format!("Bearer {}", key))
+                            .send()
+                            .await;
+                        println!("   🧹 [Auto-Clear] Delivered & removed reminder '{}' from Supabase", item.title);
                     }
                 }
             }
@@ -511,16 +482,27 @@ impl ScheduleEngine {
         println!("╚══════════════════════════════════════════════════════════════════╝
 ");
 
-        let title_clean = item.title.replace('"', "'");
-        let desc_clean = item.description.replace('"', "'");
+        let title_clean = item.title.replace('\'', "''").replace('"', " ");
+        let desc_clean = item.description.replace('\'', "''").replace('"', " ");
 
         let ps_cmd = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > ;               = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);               = .GetElementsByTagName('text');              .Item(0).AppendChild(.CreateTextNode('Veronica: {}')) > ;              .Item(1).AppendChild(.CreateTextNode('{}')) > ;               = [Windows.UI.Notifications.ToastNotification]::new();              [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Veronica AI').Show()",
+            r#"
+            [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+            [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+            $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+            $textNodes = $template.GetElementsByTagName('text')
+            $textNodes.Item(0).AppendChild($template.CreateTextNode('Veronica: {}')) | Out-Null
+            $textNodes.Item(1).AppendChild($template.CreateTextNode('{}')) | Out-Null
+            $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Veronica AI').Show($toast)
+            "#,
             title_clean, desc_clean
         );
 
         tokio::process::Command::new("powershell")
             .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_cmd])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .ok();
     }

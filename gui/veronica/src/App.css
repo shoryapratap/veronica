@@ -1,1 +1,27 @@
 @import "tailwindcss";
+
+/* MapLibre Canvas Aesthetics for Futuristic Obsidian/Silver Theme */
+.maplibregl-map {
+  background: #000000 !important;
+  font-family: inherit;
+}
+
+.maplibregl-canvas {
+  outline: none !important;
+}
+
+/* Custom Sleek Scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(113, 113, 122, 0.3);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(161, 161, 170, 0.5);
+}

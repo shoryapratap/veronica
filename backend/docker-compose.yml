@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  veronica-db:
+    image: postgres:16-alpine
+    container_name: veronica-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: veronica_password
+      POSTGRES_DB: veronica_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d veronica_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  veronica-backend:
+    build: .
+    container_name: veronica-api
+    restart: always
+    depends_on:
+      veronica-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:veronica_password@veronica-db:5432/veronica_db
+      ENVIRONMENT: production
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:
+
