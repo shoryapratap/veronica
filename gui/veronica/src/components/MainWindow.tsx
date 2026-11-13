@@ -1,9 +1,40 @@
 import React from "react";
-import { Terminal } from "lucide-react";
+import { Terminal, Layers } from "lucide-react";
 
 export const MainWindow: React.FC = () => {
   return (
-    <div className="flex-1 flex flex-col bg-zinc-950/70 backdrop-blur-xl border border-zinc-800/60 rounded-2xl p-4 overflow-hidden relative shadow-2xl">
+    <div className="flex-1 flex flex-col bg-zinc-950/70 backdrop-blur-xl border border-zinc-800/60 rounded-2xl p-3 overflow-hidden relative shadow-2xl">
+      {/* Window Header */}
+      <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-zinc-800/60 shrink-0 px-1">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-md">
+            <Layers className="w-4 h-4 text-zinc-300" />
+          </div>
+          <div>
+            <h2 className="text-xs font-mono font-bold tracking-wider text-zinc-100 uppercase">
+              Primary Workspace
+            </h2>
+            <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">
+              System Canvas
+            </p>
+          </div>
+        </div>
+
+        {/* Right Header Controls Accent */}
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-900/90 border border-zinc-800 text-[10px] font-mono text-zinc-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 animate-pulse" />
+            <span>STANDBY</span>
+          </div>
+          <div className="h-3 w-[1px] bg-zinc-800" />
+          <div className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-700" />
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-700" />
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-700" />
+          </div>
+        </div>
+      </div>
+
       {/* Main Canvas Body */}
       <div className="flex-1 rounded-xl bg-zinc-900/40 border border-zinc-800/40 relative flex flex-col items-center justify-center p-6 overflow-hidden">
         {/* Subtle Tech Grid Background */}

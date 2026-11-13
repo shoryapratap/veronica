@@ -1,6 +1,7 @@
 import React from "react";
 import { ConnectionStatus } from "../types/protocol";
-import { Activity, Server, LayoutDashboard, LayoutGrid, Sliders } from "lucide-react";
+import { Activity, Server, LayoutDashboard, LayoutGrid, Sliders, Minimize2 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 
 export type TabType = "main" | "apps" | "settings";
 
@@ -103,6 +104,22 @@ export const StatusBar: React.FC<Props> = ({
             RAM: <span className="text-zinc-100 font-medium">{ram}</span>
           </span>
         </div>
+
+        {/* Dynamic Notch Dock Button */}
+        <button
+          onClick={async () => {
+            try {
+              await invoke("hide_to_notch");
+            } catch {
+              // fallback
+            }
+          }}
+          title="Dock to Dynamic Notch (Screen Top)"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900/90 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-800 hover:border-zinc-700 transition-all cursor-pointer shadow-sm text-[11px]"
+        >
+          <Minimize2 className="w-3 h-3 text-zinc-400 group-hover:text-white" />
+          <span>Notch</span>
+        </button>
       </div>
     </header>
   );

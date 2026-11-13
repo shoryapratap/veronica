@@ -23,6 +23,10 @@ function App() {
     sendTextMessage(`launch ${target}`);
   };
 
+  const handleCloseApp = (target: string) => {
+    sendTextMessage(`close ${target}`);
+  };
+
   const handleSwitchModel = (newModel: string) => {
     sendTextMessage(`/model ${newModel}`);
   };
@@ -98,7 +102,12 @@ function App() {
       )}
 
       {/* 3. Apps Page View */}
-      {activeTab === "apps" && <AppsPage onLaunchApp={handleLaunchApp} />}
+      {activeTab === "apps" && (
+        <AppsPage
+          onLaunchApp={handleLaunchApp}
+          onCloseApp={handleCloseApp}
+        />
+      )}
 
       {/* 4. Settings Page View */}
       {activeTab === "settings" && <SettingsPage onSwitchModel={handleSwitchModel} />}

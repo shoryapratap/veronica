@@ -80,15 +80,64 @@ pub async fn scan_app() -> Result<Vec<WindowsApp>, String> {
 // 1. to sort all apps by alphabtical order
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
-// 2. save the list of apps in AppData/Veronica/installed_apps.json
+    // 2. Automatically link and extract real icons
+    if let Ok(app_data_dir) = env::var("APPDATA") {
+        let icons_dir = PathBuf::from(&app_data_dir).join("Veronica").join("icons");
+        let mut missing_icons = false;
+
+        for app in &mut apps {
+            let clean_name = app.name.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_").trim().to_string();
+            let icon_file = icons_dir.join(format!("{}.png", clean_name));
+            if icon_file.exists() {
+                app.icon_path = Some(format!("/icons/{}.png", clean_name));
+            } else {
+                missing_icons = true;
+            }
+        }
+
+        // If newly installed apps are detected without icons, trigger extraction
+        if missing_icons {
+            let possible_scripts = [
+                PathBuf::from("scripts").join("extract_all_icons.ps1"),
+                PathBuf::from("..").join("scripts").join("extract_all_icons.ps1"),
+            ];
+            for script in &possible_scripts {
+                if script.exists() {
+                    let _ = tokio::process::Command::new("powershell")
+                        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script.to_str().unwrap_or("")])
+                        .status()
+                        .await;
+
+                    for app in &mut apps {
+                        let clean_name = app.name.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_").trim().to_string();
+                        let icon_file = icons_dir.join(format!("{}.png", clean_name));
+                        if icon_file.exists() {
+                            app.icon_path = Some(format!("/icons/{}.png", clean_name));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+// 3. save the list of apps in AppData/Veronica/installed_apps.json
     if let Ok(app_data_dir) = env::var("APPDATA") {
         let veronica_dir = PathBuf::from(app_data_dir).join("Veronica");
         let _ = fs::create_dir_all(&veronica_dir);
         let json_file = veronica_dir.join("installed_apps.json");
 
         if let Ok(json_content) = serde_json::to_string_pretty(&apps) {
-            let _ = fs::write(&json_file, json_content);
+            let _ = fs::write(&json_file, &json_content);
             println!("✅ [App Scanner] Saved {} apps to: {:?}", apps.len(), json_file);
+
+            // Also keep public/installed_apps.json synced for GUI Vite dev preview
+            let public_file = PathBuf::from("gui").join("veronica").join("public").join("installed_apps.json");
+            if let Some(parent) = public_file.parent() {
+                if parent.exists() {
+                    let _ = fs::write(&public_file, &json_content);
+                }
+            }
         }
     }
 
@@ -140,66 +189,165 @@ fn scan_directory_recursive(dir: &Path, apps: &mut Vec<WindowsApp>) {
 }
 
 
-/// Smart Open App: Win32, UWP aur direct names teeno ko handle karta hai
+/// Smart Open App: Win32, UWP, common aliases, and direct binaries
 pub async fn open_app(target: &str) -> Result<String, String> {
     let target_clean = target.trim();
     let target_lower = target_clean.to_lowercase();
 
-    // 1. Check karein: Kya ye app hamari installed_apps.json list me hai?
+    // 1. Resolve common aliases (e.g. "chrome" -> "Google Chrome", "code" -> "Visual Studio Code")
+    let resolved_name = match target_lower.as_str() {
+        "chrome" | "google-chrome" => "Google Chrome",
+        "code" | "vscode" | "vs-code" => "Visual Studio Code",
+        "terminal" | "wt" | "windows-terminal" => "Terminal",
+        "calc" | "calculator" => "Calculator",
+        "notepad" => "Notepad",
+        "spotify" => "Spotify",
+        "explorer" | "files" => "File Explorer",
+        "taskmgr" | "task-manager" | "task manager" => "Task Manager",
+        "edge" | "microsoft-edge" => "Microsoft Edge",
+        "cmd" | "command-prompt" => "Command Prompt",
+        "powershell" => "Windows PowerShell",
+        _ => target_clean,
+    };
+    let resolved_lower = resolved_name.to_lowercase();
+
+    // 2. Search in cached installed_apps.json
     if let Ok(app_data) = env::var("APPDATA") {
         let json_file = PathBuf::from(app_data).join("Veronica\\installed_apps.json");
         if let Ok(content) = fs::read_to_string(&json_file) {
             if let Ok(apps) = serde_json::from_str::<Vec<WindowsApp>>(&content) {
-                if let Some(app) = apps.iter().find(|a| {
-                    a.name.eq_ignore_ascii_case(target_clean) || a.name.to_lowercase().contains(&target_lower)
-                }) {
+                // Priority 1: Exact Name Match
+                let matched_app = apps.iter().find(|a| a.name.eq_ignore_ascii_case(resolved_name))
+                    // Priority 2: Starts-with or full word match (avoids "Unicode" matching "code")
+                    .or_else(|| {
+                        apps.iter().find(|a| {
+                            let a_low = a.name.to_lowercase();
+                            a_low.starts_with(&resolved_lower)
+                                || a_low.split_whitespace().any(|w| w == resolved_lower)
+                        })
+                    })
+                    // Priority 3: Substring match as fallback
+                    .or_else(|| {
+                        apps.iter().find(|a| a.name.to_lowercase().contains(&resolved_lower))
+                    });
+
+                if let Some(app) = matched_app {
                     if app.app_type == "UWP" {
-                        // UWP / Windows Store App launch
-                        let _ = tokio::process::Command::new("explorer")
-                            .arg(format!("shell:AppsFolder\\{}", app.path))
-                            .spawn();
-                        return Ok(format!("Successfully launched UWP app: {}", app.name));
+                        // Launch UWP via cmd start shell:AppsFolder (100% reliable)
+                        let shell_path = format!("shell:AppsFolder\\{}", app.path);
+                        let res = tokio::process::Command::new("cmd")
+                            .args(["/c", "start", "", &shell_path])
+                            .status()
+                            .await;
+
+                        match res {
+                            Ok(s) if s.success() => return Ok(format!("Successfully launched UWP app: {}", app.name)),
+                            _ => {
+                                let _ = tokio::process::Command::new("powershell")
+                                    .args(["-NoProfile", "-Command", &format!("Start-Process '{}'", shell_path)])
+                                    .spawn();
+                                return Ok(format!("Launched UWP app: {}", app.name));
+                            }
+                        }
                     } else {
-                        // Win32 / Desktop Shortcut launch
-                        let _ = tokio::process::Command::new("powershell")
-                            .args(["-NoProfile", "-Command", &format!("Start-Process '{}'", app.path)])
-                            .spawn();
-                        return Ok(format!("Successfully launched Win32 app: {}", app.name));
+                        // Launch Win32 Shortcut via cmd start (resolves .lnk, target dir, icon)
+                        let res = tokio::process::Command::new("cmd")
+                            .args(["/c", "start", "", &app.path])
+                            .status()
+                            .await;
+
+                        match res {
+                            Ok(s) if s.success() => return Ok(format!("Successfully launched Win32 app: {}", app.name)),
+                            _ => {
+                                let _ = tokio::process::Command::new("powershell")
+                                    .args(["-NoProfile", "-Command", &format!("Start-Process '{}'", app.path)])
+                                    .spawn();
+                                return Ok(format!("Launched Win32 app: {}", app.name));
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    // 2. Fallback: Agar list me na mila ho, direct command chalayein (e.g. notepad, calc, cmd)
-    let res = tokio::process::Command::new("powershell")
+    // 3. Fallback: PowerShell Start-Process (handles system binaries cleanly without modal error)
+    let ps_res = tokio::process::Command::new("powershell")
         .args(["-NoProfile", "-Command", &format!("Start-Process '{}'", target_clean)])
         .spawn();
 
-    match res {
+    match ps_res {
         Ok(_) => Ok(format!("Launched application: {}", target_clean)),
         Err(e) => Err(format!("Failed to open '{}': {}", target_clean, e)),
     }
 }
 
-/// Close App: Process name ya Window title se app ko band karta hai
+/// Smart Close App: Resolves display names, process names, and window titles
 pub async fn close_app(target: &str) -> Result<String, String> {
-    let clean_name = target.trim().trim_end_matches(".exe");
+    let target_clean = target.trim();
+    let target_lower = target_clean.to_lowercase();
 
-    let ps_cmd = format!(
-        "Stop-Process -Name '{}' -Force -ErrorAction SilentlyContinue",
-        clean_name
+    // 1. Resolve common application process aliases
+    let proc_targets: Vec<String> = match target_lower.as_str() {
+        "chrome" | "google chrome" | "google-chrome" => vec!["chrome".to_string()],
+        "code" | "vscode" | "visual studio code" | "vs code" => vec!["Code".to_string()],
+        "terminal" | "wt" | "windows terminal" | "windows-terminal" => vec!["WindowsTerminal".to_string()],
+        "calc" | "calculator" => vec!["CalculatorApp".to_string(), "Calculator".to_string()],
+        "notepad" => vec!["notepad".to_string(), "Notepad".to_string()],
+        "spotify" => vec!["Spotify".to_string()],
+        "explorer" | "file explorer" | "files" => vec!["explorer".to_string()],
+        "taskmgr" | "task manager" | "task-manager" => vec!["Taskmgr".to_string()],
+        "edge" | "microsoft edge" | "msedge" => vec!["msedge".to_string()],
+        "word" | "microsoft word" => vec!["WINWORD".to_string()],
+        "excel" | "microsoft excel" => vec!["EXCEL".to_string()],
+        "powerpoint" => vec!["POWERPNT".to_string()],
+        "discord" => vec!["Discord".to_string()],
+        "slack" => vec!["slack".to_string()],
+        "steam" => vec!["steam".to_string()],
+        other => vec![other.trim_end_matches(".exe").to_string()],
+    };
+
+    let mut closed_any = false;
+
+    // 2. Try taskkill for primary known process names (fastest & cleanest on Windows)
+    for proc in &proc_targets {
+        let im_arg = if proc.ends_with(".exe") {
+            proc.clone()
+        } else {
+            format!("{}.exe", proc)
+        };
+
+        let status = tokio::process::Command::new("taskkill")
+            .args(["/F", "/IM", &im_arg, "/T"])
+            .output()
+            .await;
+
+        if let Ok(out) = status {
+            if out.status.success() {
+                closed_any = true;
+            }
+        }
+    }
+
+    if closed_any {
+        return Ok(format!("Successfully closed '{}'", target_clean));
+    }
+
+    // 3. Fallback: PowerShell by ProcessName OR MainWindowTitle
+    let ps_script = format!(
+        r#"$p = Get-Process | Where-Object {{ $_.ProcessName -like '*{0}*' -or $_.MainWindowTitle -like '*{0}*' }}; if ($p) {{ $p | Stop-Process -Force; exit 0 }} else {{ exit 1 }}"#,
+        target_clean
     );
 
     let res = tokio::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", &ps_cmd])
+        .args(["-NoProfile", "-Command", &ps_script])
         .output()
         .await;
 
     match res {
-        Ok(out) if out.status.success() => Ok(format!("Successfully closed '{}'", clean_name)),
-        Ok(_) => Ok(format!("Sent close signal for '{}'", clean_name)),
-        Err(e) => Err(format!("Failed to close '{}': {}", clean_name, e)),
+        Ok(out) if out.status.success() => Ok(format!("Successfully closed '{}'", target_clean)),
+        Ok(_) => Ok(format!("App '{}' was not active or has been closed", target_clean)),
+        Err(e) => Err(format!("Failed to close '{}': {}", target_clean, e)),
     }
 }
 
@@ -575,5 +723,12 @@ mod tests {
         // 5. Cleanup
         let deleted = delete_app_group("Renamed Workspace");
         assert!(deleted.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_smart_open_app() {
+        let r = open_app("notepad").await;
+        assert!(r.is_ok(), "Failed to open notepad: {:?}", r);
+        let _ = close_app("notepad").await;
     }
 }

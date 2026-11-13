@@ -21,6 +21,13 @@ pub fn master_schema(function_name: &str) -> serde_json::Value {
             },
             "required": ["app_name"]
         }),
+        "close_app" => json!({
+            "type": "OBJECT",
+            "properties": {
+                "app_name": { "type": "STRING", "description": "Application name or process to terminate (e.g. 'notepad', 'chrome', 'calc')" }
+            },
+            "required": ["app_name"]
+        }),
         other => json!({
             "error": format!("Unknown function '{}' in system feature", other)
         })
@@ -46,18 +53,27 @@ pub async fn master_execute(function_name: &str, data: &serde_json::Value) -> se
         }
         "launch_app" => {
             let app = data.get("app_name").and_then(|v| v.as_str()).unwrap_or("");
-            let res = tokio::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &format!("Start-Process '{}'", app)])
-                .spawn();
-
-            match res {
-                Ok(_) => json!({
+            match platform::windows::app::open_app(app).await {
+                Ok(msg) => json!({
                     "status": "success",
-                    "message": format!("Launched application '{}'", app)
+                    "message": msg
                 }),
                 Err(e) => json!({
                     "status": "error",
-                    "message": format!("Failed to launch '{}': {}", app, e)
+                    "message": e
+                })
+            }
+        }
+        "close_app" => {
+            let app = data.get("app_name").and_then(|v| v.as_str()).unwrap_or("");
+            match platform::windows::app::close_app(app).await {
+                Ok(msg) => json!({
+                    "status": "success",
+                    "message": msg
+                }),
+                Err(e) => json!({
+                    "status": "error",
+                    "message": e
                 })
             }
         }

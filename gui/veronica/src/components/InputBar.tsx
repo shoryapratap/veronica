@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Send, Terminal, Mic } from "lucide-react";
+import { Terminal, Mic, CornerDownLeft } from "lucide-react";
 
 interface Props {
   onSendMessage: (text: string) => boolean;
@@ -66,13 +66,14 @@ export const InputBar: React.FC<Props> = ({ onSendMessage, disabled = false }) =
           <Mic className="w-3.5 h-3.5" />
         </button>
 
-        {/* Send Button */}
+        {/* Enter / Send Button */}
         <button
           type="submit"
           disabled={disabled || !input.trim()}
-          className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-900/60 text-zinc-200 hover:text-white rounded-xl flex items-center justify-center transition-all border border-zinc-700/60 shadow-lg shadow-black/30 disabled:shadow-none disabled:border-zinc-800 disabled:text-zinc-600 cursor-pointer disabled:cursor-not-allowed"
+          className="px-3 py-1.5 bg-zinc-900/90 hover:bg-zinc-800 disabled:bg-zinc-950/60 text-zinc-300 hover:text-white disabled:text-zinc-600 rounded-xl flex items-center gap-1.5 transition-all border border-zinc-800 hover:border-zinc-700 disabled:border-zinc-900 shadow-lg shadow-black/30 cursor-pointer disabled:cursor-not-allowed font-mono text-xs uppercase tracking-wider"
         >
-          <Send className="w-3.5 h-3.5" />
+          <CornerDownLeft className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" />
+          <span>ENTER</span>
         </button>
       </div>
     </form>

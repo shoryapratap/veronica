@@ -12,12 +12,27 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Project Veronica - Autonomous AI",
         "width": 1366,
         "height": 860,
         "minWidth": 1024,
         "minHeight": 680,
         "resizable": true
+      },
+      {
+        "label": "notch",
+        "title": "Veronica Notch",
+        "url": "index.html?window=notch",
+        "width": 260,
+        "height": 42,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {

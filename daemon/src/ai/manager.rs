@@ -85,6 +85,7 @@ impl ToolManager {
                 let schema = match feature {
                     "schedule" => ScheduleEngine::master_schema(function),
                     "system" => crate::system::master_schema(function),
+                    "app" => crate::system::platform::windows::app::master_schema(function),
                     other => json!({
                         "error": format!("Feature '{}' not found in system", other)
                     }),
@@ -110,6 +111,7 @@ impl ToolManager {
                 let result = match feature {
                     "schedule" => self.schedule.master_execute(function, data).await,
                     "system" => crate::system::master_execute(function, data).await,
+                    "app" => crate::system::platform::windows::app::master_execute(function, data).await,
                     other => json!({
                         "status": "error",
                         "message": format!("Feature '{}' not recognized", other)

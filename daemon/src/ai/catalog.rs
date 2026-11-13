@@ -7,6 +7,8 @@ pub const FEATURE_CATALOG: &str = r#"
     functions: [create, list, cancel]
 - system:
     functions: [capture_screen, launch_app]
+- app:
+    functions: [scan, open, close, create_group, delete_group, open_group, close_group, list_groups]
 "#;
 
 pub fn get_catalog() -> &'static str {

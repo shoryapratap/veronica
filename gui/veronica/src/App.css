@@ -25,3 +25,17 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(161, 161, 170, 0.5);
 }
+
+/* Dynamic Notch Window Transparency */
+html.notch-mode,
+body.notch-mode,
+body.notch-mode #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  user-select: none !important;
+}

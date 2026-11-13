@@ -125,6 +125,54 @@ async fn handle_connection(
                                     } else {
                                         let _ = session.send_text("I have shared my screen with you. Please describe what is visible on my screen.").await;
                                     }
+                                } else if let Some(target) = trimmed.strip_prefix("launch ") {
+                                    let target_app = target.trim();
+                                    println!("\rYou (GUI) > {}", trimmed);
+                                    println!("   🚀 [Direct App Launch]: Opening '{}' immediately", target_app);
+                                    let launch_res = crate::system::platform::windows::app::open_app(target_app).await;
+                                    match launch_res {
+                                        Ok(msg) => {
+                                            println!("   ✅ {}", msg);
+                                            let _ = broadcast_tx.send(DaemonMessage::Transcript {
+                                                speaker: "VERONICA".to_string(),
+                                                text: format!("Launching {}.", target_app),
+                                                is_final: true,
+                                            });
+                                            let _ = session.send_text(&format!("I just launched '{}'. Acknowledge briefly as Veronica.", target_app)).await;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("   ❌ Failed to launch '{}': {}", target_app, e);
+                                            let _ = broadcast_tx.send(DaemonMessage::Transcript {
+                                                speaker: "VERONICA".to_string(),
+                                                text: format!("Failed to launch {}: {}", target_app, e),
+                                                is_final: true,
+                                            });
+                                        }
+                                    }
+                                } else if let Some(target) = trimmed.strip_prefix("close ").or_else(|| trimmed.strip_prefix("kill ")) {
+                                    let target_app = target.trim();
+                                    println!("\rYou (GUI) > {}", trimmed);
+                                    println!("   🛑 [Direct App Terminate]: Closing '{}' immediately", target_app);
+                                    let close_res = crate::system::platform::windows::app::close_app(target_app).await;
+                                    match close_res {
+                                        Ok(msg) => {
+                                            println!("   ✅ {}", msg);
+                                            let _ = broadcast_tx.send(DaemonMessage::Transcript {
+                                                speaker: "VERONICA".to_string(),
+                                                text: format!("Closed {}.", target_app),
+                                                is_final: true,
+                                            });
+                                            let _ = session.send_text(&format!("I just closed '{}'. Acknowledge briefly as Veronica.", target_app)).await;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("   ❌ Failed to close '{}': {}", target_app, e);
+                                            let _ = broadcast_tx.send(DaemonMessage::Transcript {
+                                                speaker: "VERONICA".to_string(),
+                                                text: format!("Failed to close {}: {}", target_app, e),
+                                                is_final: true,
+                                            });
+                                        }
+                                    }
                                 } else {
                                     println!("\rYou (GUI) > {}", trimmed);
                                     let _ = session.send_text(trimmed).await;
